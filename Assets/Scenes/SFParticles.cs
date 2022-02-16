@@ -4,6 +4,7 @@ using UnityEngine;
 using source.assets.Discrete_space;
 using source.assets.Particles;
 using source;
+using Vector2 = UnityEngine.Vector2;
 using Vector3 = UnityEngine.Vector3;
 
 public class SFParticles : MonoBehaviour
@@ -12,32 +13,43 @@ public class SFParticles : MonoBehaviour
     bool bPointsUpdated = false;
     private ParticleSystem particleSystem;
     //PARAMETERS
-    int[] vol_size = { 10, 5, 5 };      // box size
-    int[] vol_res = { 128, 64, 64 };    // volume resolution
-    float hbar = (float)0.1;           // Planck constant
-    float dt = 1 / (float)12;          // time step
+    [Header("Начальные условия")]
+    [SerializeField, Tooltip("Box size")] private int[] vol_size = { 10, 5, 5 };      // box size
+    [SerializeField, Tooltip("Volume resolution")] private int[] vol_res = { 128, 64, 64 };    // volume resolution
+    [SerializeField, Tooltip("Planck constant")] private float hbar = (float)0.1;           // Planck constant
+    [SerializeField, Tooltip("Time step")] private float dt = 1 / (float)12;          // time step
     int tmax = 85;
-    float[] background_vel = {(float) -0.2, 0, 0};
+    [SerializeField, Tooltip("Background velocity")] private float[] background_vel = {(float) -0.2, 0, 0};
         
-    float r1 = (float)1.5; 
-    float r2 = (float)0.9;              
-    float[] n1 = {-1,0,0};         
-    float[] n2 = {-1,0,0};
+    
+    [SerializeField, Tooltip("First ring radius")] private float r1 = (float)1.5; 
+    [SerializeField, Tooltip("Second ring radius")] private float r2 = (float)0.9;              
+    [SerializeField] private float[] n1 = {-1,0,0};         
+    [SerializeField] private float[] n2 = {-1,0,0};
 
-    int n_particles = 100000;
+    [SerializeField, Tooltip("Particles count")] private int n_particles = 100000;
 
     Velocity vel;
     object lk= new object();
 
     UnityThreading.ActionThread myThread;
-    void Start()
+
+    [Header("Дополнительные настройки")] 
+    [SerializeField, Tooltip("Размер частиц")] private float _particleSize = 0.1f;
+    
+    [Header("Начальное расположение частиц")] 
+    [SerializeField] private Vector2 _boxSizeX = new Vector2(5, 5);
+    [SerializeField] private Vector2 _boxSizeY = new Vector2(0.5f, 4.5f);
+    [SerializeField] private Vector2 _boxSizeZ = new Vector2(0.5f, 4.5f);
+    
+    private void Start()
     {
         
         particleSystem = GetComponent<ParticleSystem>();
         myThread = UnityThreadHelper.CreateThread(Worker);
     }
 
-    void Worker()
+    private void Worker()
     {
         float[] cen1 = { vol_size[0] / 2f, vol_size[1] / 2f, vol_size[2] / 2f };
         float[] cen2 = { vol_size[0] / 2f, vol_size[1] / 2f, vol_size[2] / 2f };
@@ -85,15 +97,23 @@ public class SFParticles : MonoBehaviour
         System.Random rnd = new System.Random();
         for (int i = 0; i < n_particles; i++)
         {
-            y[i] = (float)(rnd.NextDouble() * 4 + 0.5);
+            /*y[i] = (float)(rnd.NextDouble() * 4 + 0.5);
             z[i] = (float)(rnd.NextDouble() * 4 + 0.5);
-            x[i] = 5;
+            x[i] = 5;*/
+            x[i] = (float) (rnd.NextDouble() * (_boxSizeX.y - _boxSizeX.x) + _boxSizeX.x);
+            y[i] = (float) (rnd.NextDouble() * (_boxSizeY.y - _boxSizeY.x) + _boxSizeY.x);
+            z[i] = (float) (rnd.NextDouble() * (_boxSizeZ.y - _boxSizeZ.x) + _boxSizeZ.x);
         }
 
         Particles.add_particles(x, y, z, n_particles);
 
         vel = new Velocity(ISF.properties.resx, ISF.properties.resy, ISF.properties.resz);
         var c = new ParticleSystem.Particle[n_particles];
+        
+        for (int i = 0; i < n_particles; i++)
+        {
+            c[i].size = _particleSize;
+        }
 
         while (true) {
             //MAIN ITERATION
@@ -119,7 +139,7 @@ public class SFParticles : MonoBehaviour
                 var cc = c[ii].velocity.normalized;
                 c[ii].color = new Color(cc.x, cc.y, cc.z);
 
-                c[ii].size = 0.1f;
+                //c[ii].size = _particleSize;
             }
 
             lock (pz) {
