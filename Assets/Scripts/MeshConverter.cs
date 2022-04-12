@@ -7,6 +7,8 @@ using VoxelSystem;
 public class MeshConverter : MonoBehaviour
 {
     [SerializeField] private MeshFilter _meshFilter;
+    [SerializeField] private bool _manyMeshes;
+    [SerializeField] private List<MeshFilter> _meshFilters;
     [SerializeField] private int _particlesCount = 100000;
     [SerializeField] private ParticleSystem _particleSystem;
     [SerializeField] protected ComputeShader voxelizer;
@@ -51,8 +53,16 @@ public class MeshConverter : MonoBehaviour
         Particles.add_particles(x, y, z, _particlesCount);
 
         var c = new ParticleSystem.Particle[_particlesCount];*/
-        
-        var points = PointsFromMesh(_meshFilter.mesh);
+
+        List<Vector3> points;
+        if (_manyMeshes)
+        {
+            points = PointsFromMesh(_meshFilters);
+        }
+        else
+        {
+            points = PointsFromMesh(_meshFilter.mesh);
+        }
         var particles = new ParticleSystem.Particle[points.Count];
         for (var i = 0; i < particles.Length; i++)
         {
@@ -77,6 +87,25 @@ public class MeshConverter : MonoBehaviour
             }
         }
         data.Dispose();
+        Debug.Log($"Particles count = {list.Count}");
+        return list;
+    }
+    
+    private List<Vector3> PointsFromMesh(List<MeshFilter> meshFilters)
+    {
+        var list = new List<Vector3>();
+        foreach (var meshFilter in meshFilters)
+        {
+            var data = GPUVoxelizer.Voxelize(voxelizer, meshFilter.mesh, resolution, (type == MeshType.Volume));
+            foreach (var voxel in data.GetData())
+            {
+                if (voxel.fill > 0)
+                {
+                    list.Add(voxel.position);
+                }
+            }
+            data.Dispose();
+        }
         Debug.Log($"Particles count = {list.Count}");
         return list;
     }
