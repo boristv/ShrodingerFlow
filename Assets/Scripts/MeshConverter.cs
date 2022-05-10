@@ -1,15 +1,10 @@
-using System.Collections;
 using System.Collections.Generic;
-using source.assets.Particles;
 using UnityEngine;
 using VoxelSystem;
 
 public class MeshConverter : MonoBehaviour
 {
-    [SerializeField] private MeshFilter _meshFilter;
-    [SerializeField] private bool _manyMeshes;
-    [SerializeField] private List<MeshFilter> _meshFilters;
-    [SerializeField] private int _particlesCount = 100000;
+    [SerializeField] private GameObject _model;
     [SerializeField] private ParticleSystem _particleSystem;
     [SerializeField] protected ComputeShader voxelizer;
     [SerializeField] protected int resolution = 32;
@@ -18,10 +13,17 @@ public class MeshConverter : MonoBehaviour
     [Header("Particles parameters")] 
     [SerializeField] private float _particleSize = 0.1125f;
     [SerializeField] private Color32 _particleColor = new Color32(255, 255, 255, 255);
+    [SerializeField] private bool _needScaling;
+    [SerializeField] private float _scaling = 0.01f;
+
+    private struct MeshFilterAndBounds
+    {
+        public MeshFilter MeshFilter;
+        public Bounds Bounds;
+    }
     
-    UnityThreading.ActionThread myThread;
-    ParticleSystem.Particle[] cloud;
-    object lk= new object();
+    private List<MeshFilterAndBounds> meshFilterAndBoundsList;
+    private Bounds FullBounds;
     
     enum MeshType {
         Volume, Surface
@@ -34,35 +36,26 @@ public class MeshConverter : MonoBehaviour
 
     private void Convert()
     {
-        /*Particles.init(_particlesCount);
-
-        //init particles
-        var x = new float[_particlesCount];
-        var y = new float[_particlesCount];
-        var z = new float[_particlesCount];
-
-        var points = PointsFromMesh(_meshFilter.mesh);
+        var points = PointsFromMesh(_model);
+        
+        if (points == null || points.Count == 0)
+        {
+            Debug.Log("Convert failed: no points");
+            return;
+        }
+        
+        //Normalizing and scaling
+        if (_needScaling)
+        {
+            var dist = Vector3.Distance(points[0], points[1]);
             
-        for (int i = 0; i < _particlesCount; i++)
-        {
-            x[i] = points[i].x;
-            y[i] = points[i].y;
-            z[i] = points[i].z;
+            for (var i = 0; i < points.Count; i++)
+            {
+                points[i] /= dist;
+                points[i] *= _scaling;
+            }
         }
 
-        Particles.add_particles(x, y, z, _particlesCount);
-
-        var c = new ParticleSystem.Particle[_particlesCount];*/
-
-        List<Vector3> points;
-        if (_manyMeshes)
-        {
-            points = PointsFromMesh(_meshFilters);
-        }
-        else
-        {
-            points = PointsFromMesh(_meshFilter.mesh);
-        }
         var particles = new ParticleSystem.Particle[points.Count];
         for (var i = 0; i < particles.Length; i++)
         {
@@ -71,42 +64,65 @@ public class MeshConverter : MonoBehaviour
             particles[i].startSize = _particleSize;
             particles[i].startColor = _particleColor;
         }
-
+        
         _particleSystem.SetParticles(particles, particles.Length);
     }
 
-    private List<Vector3> PointsFromMesh(Mesh mesh)
+    private List<Vector3> PointsFromMesh(GameObject meshesParent)
     {
-        var list = new List<Vector3>();
-        var data = GPUVoxelizer.Voxelize(voxelizer, mesh, resolution, (type == MeshType.Volume));
-        foreach (var voxel in data.GetData())
+        var points = new List<Vector3>();
+        
+        MeshFilter[] meshFilters = meshesParent.GetComponentsInChildren<MeshFilter>();
+
+        if (meshFilters.Length == 0)
         {
-            if (voxel.fill > 0)
-            {
-                list.Add(voxel.position);
-            }
+            Debug.Log("Model does not contain meshes");
+            return new List<Vector3>();
         }
-        data.Dispose();
-        Debug.Log($"Particles count = {list.Count}");
-        return list;
-    }
-    
-    private List<Vector3> PointsFromMesh(List<MeshFilter> meshFilters)
-    {
-        var list = new List<Vector3>();
+        
+        meshFilterAndBoundsList = new List<MeshFilterAndBounds>();
         foreach (var meshFilter in meshFilters)
         {
-            var data = GPUVoxelizer.Voxelize(voxelizer, meshFilter.mesh, resolution, (type == MeshType.Volume));
+            meshFilter.sharedMesh.RecalculateBounds();
+            var meshFilterAndBounds = new MeshFilterAndBounds()
+            {
+                MeshFilter = meshFilter,
+                Bounds = ModifiedGPUVoxelizer.GetRealBounds(meshFilter)
+            };
+            meshFilterAndBoundsList.Add(meshFilterAndBounds);
+        }
+        FullBounds = meshFilterAndBoundsList[0].Bounds;
+        foreach (var meshFilterAndBounds in meshFilterAndBoundsList)
+        {
+            FullBounds.Encapsulate(meshFilterAndBounds.Bounds);
+        }
+        
+        foreach (var meshFilterAndBounds in meshFilterAndBoundsList)
+        {
+            var data = ModifiedGPUVoxelizer.Voxelize(voxelizer, meshFilterAndBounds.MeshFilter, meshFilterAndBounds.Bounds, FullBounds, resolution, (type == MeshType.Volume));
             foreach (var voxel in data.GetData())
             {
                 if (voxel.fill > 0)
                 {
-                    list.Add(voxel.position);
+                    points.Add(voxel.position);
                 }
             }
             data.Dispose();
         }
-        Debug.Log($"Particles count = {list.Count}");
-        return list;
+        Debug.Log($"Particles count = {points.Count}");
+        return points;
     }
+
+    /*private void OnDrawGizmos()
+    {
+        if (meshFilterAndBoundsList != null)
+        {
+            foreach (var element in meshFilterAndBoundsList)
+            {
+                Gizmos.DrawWireCube(element.Bounds.center, element.Bounds.extents * 2);
+            }
+        }
+        Gizmos.color = Color.yellow;
+        Gizmos.DrawWireCube(FullBounds.center, FullBounds.extents * 2);
+    }*/
 }
