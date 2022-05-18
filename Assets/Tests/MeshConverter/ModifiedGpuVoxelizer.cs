@@ -62,7 +62,7 @@ namespace VoxelSystem {
 	        return result;
         }
 
-        private static Vector3 Rotate(Vector3 point, Vector3 angles)
+        public static Vector3 Rotate(Vector3 point, Vector3 angles)
         {
 	        var result = point;
 	        result = RotateZ(result, angles.z);

@@ -335,6 +335,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   _meshFilter: {fileID: 42472368}
+  _manyMeshes: 0
+  _meshFilters: []
   _particlesCount: 100000
   _particleSystem: {fileID: 1842234534}
   voxelizer: {fileID: 7200000, guid: 5fdfd9c0be0cd42fca24f981cc152dd4, type: 3}
@@ -344,6 +346,7 @@ MonoBehaviour:
   _particleColor:
     serializedVersion: 2
     rgba: 4294967295
+  _scaling: 0.02675
 --- !u!4 &544089627
 Transform:
   m_ObjectHideFlags: 0

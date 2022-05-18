@@ -7,7 +7,7 @@ using source;
 using Vector2 = UnityEngine.Vector2;
 using Vector3 = UnityEngine.Vector3;
 
-public class SFObstacle : MonoBehaviour
+public class SFObstacle : SFBase
 {
     ParticleSystem.Particle[] cloud;
     bool bPointsUpdated = false;
@@ -148,7 +148,7 @@ public class SFObstacle : MonoBehaviour
         vel = new Velocity(ISF.properties.resx, ISF.properties.resy, ISF.properties.resz);
         var c = new ParticleSystem.Particle[n_particles * 1000];
 
-        var iterator = 0;
+        iterator = 0;
         while (true)
         {
             iterator++;
@@ -192,15 +192,21 @@ public class SFObstacle : MonoBehaviour
             y = new float[n_particles];
             z = new float[n_particles];
             System.Random rnd = new System.Random();
-            for (int i = 0; i < n_particles; i++)
+            //if (iterator < 20)
             {
-                var rt = (float)rnd.NextDouble() * 2 * Mathf.PI;
-                x[i] = nozzleCen.x;
-                y[i] = nozzleCen.y + 0.9f * nozzleRad * Mathf.Cos(rt);
-                z[i] = nozzleCen.z + 0.9f * nozzleRad * Mathf.Sin(rt);
+                for (int i = 0; i < n_particles; i++)
+                {
+                    var rt = (float)rnd.NextDouble() * 2 * Mathf.PI;
+                    x[i] = nozzleCen.x;
+                    y[i] = nozzleCen.y + 0.9f * nozzleRad * Mathf.Cos(rt);
+                    z[i] = nozzleCen.z + 0.9f * nozzleRad * Mathf.Sin(rt);
+                    //y[i] = (float) (rnd.NextDouble() * (_boxSizeY.y - _boxSizeY.x) + _boxSizeY.x);
+                    //z[i] = (float) (rnd.NextDouble() * (_boxSizeZ.y - _boxSizeZ.x) + _boxSizeZ.x);
+                }
+                Particles.add_particles(x, y, z, n_particles);
+                particlesCount += n_particles;
             }
-            Particles.add_particles(x, y, z, n_particles);
-            particlesCount += n_particles;
+            
 
             //particle update
             ISF.update_velocities(vel);

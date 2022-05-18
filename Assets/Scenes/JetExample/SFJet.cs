@@ -7,7 +7,7 @@ using source;
 using Vector2 = UnityEngine.Vector2;
 using Vector3 = UnityEngine.Vector3;
 
-public class SFJet : MonoBehaviour
+public class SFJet : SFBase
 {
     ParticleSystem.Particle[] cloud;
     bool bPointsUpdated = false;
@@ -139,7 +139,7 @@ public class SFJet : MonoBehaviour
             c[i].size = _particleSize;
         }*/
 
-        var iterator = 0;
+        iterator = 0;
         while (true)
         {
             iterator++;

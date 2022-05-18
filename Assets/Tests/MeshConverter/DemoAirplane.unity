@@ -132,7 +132,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 544089627}
-  - component: {fileID: 544089626}
+  - component: {fileID: 544089628}
   m_Layer: 0
   m_Name: Converter
   m_TagString: Untagged
@@ -140,29 +140,6 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &544089626
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 544089625}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: b1a497e6662c7964d9132a09071be66e, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  _model: {fileID: 1222191303}
-  _particleSystem: {fileID: 1842234534}
-  voxelizer: {fileID: 7200000, guid: 5fdfd9c0be0cd42fca24f981cc152dd4, type: 3}
-  resolution: 128
-  type: 0
-  _particleSize: 0.05625
-  _particleColor:
-    serializedVersion: 2
-    rgba: 4294967295
-  _needScaling: 0
-  _scaling: 0.01
 --- !u!4 &544089627
 Transform:
   m_ObjectHideFlags: 0
@@ -177,6 +154,27 @@ Transform:
   m_Father: {fileID: 0}
   m_RootOrder: 2
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &544089628
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 544089625}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9482cfa964dc1e84db84db003ca9baf2, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _model: {fileID: 1222191303}
+  _particleSystem: {fileID: 1842234534}
+  voxelizer: {fileID: 7200000, guid: 5fdfd9c0be0cd42fca24f981cc152dd4, type: 3}
+  resolution: 128
+  type: 0
+  _particleSize: 0.05625
+  _particleColor:
+    serializedVersion: 2
+    rgba: 4294967295
 --- !u!850595691 &880038139
 LightingSettings:
   m_ObjectHideFlags: 0
