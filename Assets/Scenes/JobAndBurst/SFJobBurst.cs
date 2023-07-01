@@ -4,17 +4,22 @@ using UnityEngine;
 using source.assets.Discrete_space;
 using source.assets.Particles;
 using source;
+using Unity.Burst;
+using Unity.Collections;
+using Unity.Jobs;
+using Unity.Mathematics;
 using float3 = Unity.Mathematics.float3;
 using Matrix4x4 = UnityEngine.Matrix4x4;
 using Quaternion = UnityEngine.Quaternion;
 using Vector2 = UnityEngine.Vector2;
 using Vector3 = UnityEngine.Vector3;
 
-public class SFParticles : MonoBehaviour
+public class SFJobBurst : MonoBehaviour
 {
+    float3[] p;
     ParticleSystem.Particle[] cloud;
+    
     bool bPointsUpdated = false;
-    private ParticleSystem particleSystem;
     //PARAMETERS
     [Header("Начальные условия")]
     [SerializeField, Tooltip("Box size")] private int[] vol_size = { 10, 5, 5 };      // box size
@@ -45,14 +50,37 @@ public class SFParticles : MonoBehaviour
     [SerializeField] private Vector2 _boxSizeY = new Vector2(0.5f, 4.5f);
     [SerializeField] private Vector2 _boxSizeZ = new Vector2(0.5f, 4.5f);
 
-    private int iter;
-    private int upd;
+    [SerializeField] private Mesh _mesh;
+    [SerializeField] private Material _material;
+
+    private ObjectPositionJob _job;
+    private NativeArray<float3> _nativeP;
+    private NativeArray<float> _nativeCubeYOffsets;
+    private NativeArray<Matrix4x4> _nativeMatrices;
+    private NativeArray<float3> _nativePositions;
+    private RenderParams _rp;
+
+    private bool _isReady;
     
     private void Start()
     {
+        p = new float3[n_particles];
+        
         _rp = new RenderParams(_material);
-        _matrices = new Matrix4x4[n_particles];
-        particleSystem = GetComponent<ParticleSystem>();
+        
+        var count = n_particles;
+        _nativePositions = new NativeArray<float3>(count, Allocator.Persistent);
+        _nativeMatrices = new NativeArray<Matrix4x4>(count, Allocator.Persistent);
+        _nativeCubeYOffsets = new NativeArray<float>(count, Allocator.Persistent);
+        _nativeP = new NativeArray<float3>(count, Allocator.Persistent);
+        
+        _job = new ObjectPositionJob
+        {
+            Positions = _nativePositions,
+            Size = _particleSize * Vector3.one,
+            Rotation = Quaternion.identity
+        };
+        
         myThread = UnityThreadHelper.CreateThread(Worker);
     }
 
@@ -104,9 +132,6 @@ public class SFParticles : MonoBehaviour
         System.Random rnd = new System.Random();
         for (int i = 0; i < n_particles; i++)
         {
-            /*y[i] = (float)(rnd.NextDouble() * 4 + 0.5);
-            z[i] = (float)(rnd.NextDouble() * 4 + 0.5);
-            x[i] = 5;*/
             x[i] = (float) (rnd.NextDouble() * (_boxSizeX.y - _boxSizeX.x) + _boxSizeX.x);
             y[i] = (float) (rnd.NextDouble() * (_boxSizeY.y - _boxSizeY.x) + _boxSizeY.x);
             z[i] = (float) (rnd.NextDouble() * (_boxSizeZ.y - _boxSizeZ.x) + _boxSizeZ.x);
@@ -115,15 +140,8 @@ public class SFParticles : MonoBehaviour
         Particles.add_particles(x, y, z, n_particles);
 
         vel = new Velocity(ISF.properties.resx, ISF.properties.resy, ISF.properties.resz);
-        var c = new ParticleSystem.Particle[n_particles];
-        
-        for (int i = 0; i < n_particles; i++)
-        {
-            c[i].size = _particleSize;
-        }
 
         while (true) {
-            Debug.Log($"Iteration {iter++}");
             //MAIN ITERATION
             //incompressible Schroedinger flow
             ISF.update_space();
@@ -133,76 +151,60 @@ public class SFParticles : MonoBehaviour
 
             Particles.calculate_movement(vel);
 
-
             float[] px = Particles.x;
             float[] py = Particles.y;
             float[] pz = Particles.z;
-            
 
             for (int ii = 0; ii < n_particles; ++ii)
             {
-                var pos = new Vector3(px[ii], py[ii], pz[ii]);
-                float3 p = new float3(px[ii], py[ii], pz[ii]);
-                
-                var lastPose = c[ii].position;
-                c[ii].position = pos;
-                c[ii].velocity = (pos - lastPose);
-                var cc = c[ii].velocity.normalized;
-                c[ii].color = new Color(cc.x, cc.y, cc.z);
-
-                //c[ii].size = _particleSize;
+                p[ii] = new Vector3(px[ii], py[ii], pz[ii]);
             }
 
-            lock (pz) {
-                cloud = c;
+            lock (lk)
+            {
+                _isReady = true;
             }
 
             if (UnityThreading.ActionThread.CurrentThread.ShouldStop)
                 return; // finish
         }
-
     }
-
-    [SerializeField] private Mesh _mesh;
-    [SerializeField] private Material _material;
-
-    private Matrix4x4[] _matrices;
-    private RenderParams _rp;
-
-    private int ii;
     
     public void Update()
     {
-        
-        if (cloud != null)
+        if (_isReady)
         {
-            Debug.Log($"Update {upd++}");
-            particleSystem.SetParticles(cloud, cloud.Length);
+            _job.Matrices = _nativeMatrices;
+            for (int ii = 0; ii < n_particles; ii++)
+            {
+                _nativeP[ii] = p[ii];
+            }
+            _job.Positions = _nativeP;
+            _job.Schedule(_nativeMatrices.Length, 64).Complete();
 
-            ////if (ii % 60 == 0)
-            //{
-            //    for (var i = 0; i < cloud.Length; i++)
-            //    {
-            //        _matrices[i].SetTRS(cloud[i].position, Quaternion.identity, Vector3.one * 0.3f);
-            //    }
-            //}
-            //ii++;
-            //
-            //Graphics.RenderMeshInstanced(_rp, _mesh, 0, _matrices);
+            Graphics.RenderMeshInstanced(_rp, _mesh, 0, _nativeMatrices);
         }
-        //lock (lk) {
-        //    if (cloud != null)
-        //    {
-        //        particleSystem.SetParticles(cloud, cloud.Length);
-        //        /*
-        //        for (var i = 0; i < cloud.Length; i++)
-        //        {
-        //            _matrices[i].SetTRS(cloud[i].position, Quaternion.identity, Vector3.one);
-        //        }
-//
-        //        Graphics.RenderMeshInstanced(_rp, _mesh, 0, _matrices);*/
-        //    }
-        //}
     }
         
+    private void OnDestroy()
+    {
+        _nativePositions.Dispose();
+        _nativeMatrices.Dispose();
+        _nativeCubeYOffsets.Dispose();
+        _nativeP.Dispose();
+    }
+}
+
+[BurstCompile]
+internal struct ObjectPositionJob : IJobParallelFor
+{
+    public NativeArray<float3> Positions;
+    public NativeArray<Matrix4x4> Matrices;
+    public Vector3 Size;
+    public Quaternion Rotation;
+
+    public void Execute(int index)
+    {
+        Matrices[index] = Matrix4x4.TRS(Positions[index], Rotation, Size);
+    }
 }
