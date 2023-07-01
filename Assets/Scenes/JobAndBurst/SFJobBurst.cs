@@ -157,7 +157,7 @@ public class SFJobBurst : MonoBehaviour
 
             for (int ii = 0; ii < n_particles; ++ii)
             {
-                p[ii] = new Vector3(px[ii], py[ii], pz[ii]);
+                p[ii] = new float3(px[ii], py[ii], pz[ii]);
             }
 
             lock (lk)
@@ -192,6 +192,8 @@ public class SFJobBurst : MonoBehaviour
         _nativeMatrices.Dispose();
         _nativeCubeYOffsets.Dispose();
         _nativeP.Dispose();
+        
+        myThread.Dispose();
     }
 }
 

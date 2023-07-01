@@ -1,20 +1,32 @@
 ﻿using System.Numerics;
+using System.Runtime.InteropServices;
 using ManagedCuda.VectorTypes;
 using UnityEngine;
 using source.assets.Discrete_space;
 using source.assets.Particles;
 using source;
+using Unity.Burst;
+using Unity.Collections;
+using Unity.Entities;
+using Unity.Jobs;
+using Unity.Mathematics;
+using Unity.Transforms;
 using float3 = Unity.Mathematics.float3;
 using Matrix4x4 = UnityEngine.Matrix4x4;
 using Quaternion = UnityEngine.Quaternion;
 using Vector2 = UnityEngine.Vector2;
 using Vector3 = UnityEngine.Vector3;
 
-public class SFParticles : MonoBehaviour
+public class SFDOTS : MonoBehaviour
 {
+    
+    private SystemHandle _system;
+    private World _world;
+    
+    public static float3[] p;
     ParticleSystem.Particle[] cloud;
+    
     bool bPointsUpdated = false;
-    private ParticleSystem particleSystem;
     //PARAMETERS
     [Header("Начальные условия")]
     [SerializeField, Tooltip("Box size")] private int[] vol_size = { 10, 5, 5 };      // box size
@@ -45,14 +57,42 @@ public class SFParticles : MonoBehaviour
     [SerializeField] private Vector2 _boxSizeY = new Vector2(0.5f, 4.5f);
     [SerializeField] private Vector2 _boxSizeZ = new Vector2(0.5f, 4.5f);
 
-    private int iter;
-    private int upd;
+    [SerializeField] private Mesh _mesh;
+    [SerializeField] private Material _material;
+
+    private ObjectPositionJob _job;
+    private NativeArray<float3> _nativeP;
+    private NativeArray<float> _nativeCubeYOffsets;
+    private NativeArray<Matrix4x4> _nativeMatrices;
+    private NativeArray<float3> _nativePositions;
+    private RenderParams _rp;
+
+    private bool _isReady;
     
-    private void Start()
+    private System.Collections.IEnumerator Start()
     {
+        yield return new WaitForSeconds(0.5f);
+
+        _world = World.DefaultGameObjectInjectionWorld;
+        _system = _world.CreateSystem<SpawnerSystem>();
+        
+        p = new float3[n_particles];
+        
         _rp = new RenderParams(_material);
-        _matrices = new Matrix4x4[n_particles];
-        particleSystem = GetComponent<ParticleSystem>();
+        
+        var count = n_particles;
+        _nativePositions = new NativeArray<float3>(count, Allocator.Persistent);
+        _nativeMatrices = new NativeArray<Matrix4x4>(count, Allocator.Persistent);
+        _nativeCubeYOffsets = new NativeArray<float>(count, Allocator.Persistent);
+        _nativeP = new NativeArray<float3>(count, Allocator.Persistent);
+        
+        _job = new ObjectPositionJob
+        {
+            Positions = _nativePositions,
+            Size = _particleSize * Vector3.one,
+            Rotation = Quaternion.identity
+        };
+        
         myThread = UnityThreadHelper.CreateThread(Worker);
     }
 
@@ -104,9 +144,6 @@ public class SFParticles : MonoBehaviour
         System.Random rnd = new System.Random();
         for (int i = 0; i < n_particles; i++)
         {
-            /*y[i] = (float)(rnd.NextDouble() * 4 + 0.5);
-            z[i] = (float)(rnd.NextDouble() * 4 + 0.5);
-            x[i] = 5;*/
             x[i] = (float) (rnd.NextDouble() * (_boxSizeX.y - _boxSizeX.x) + _boxSizeX.x);
             y[i] = (float) (rnd.NextDouble() * (_boxSizeY.y - _boxSizeY.x) + _boxSizeY.x);
             z[i] = (float) (rnd.NextDouble() * (_boxSizeZ.y - _boxSizeZ.x) + _boxSizeZ.x);
@@ -115,15 +152,8 @@ public class SFParticles : MonoBehaviour
         Particles.add_particles(x, y, z, n_particles);
 
         vel = new Velocity(ISF.properties.resx, ISF.properties.resy, ISF.properties.resz);
-        var c = new ParticleSystem.Particle[n_particles];
-        
-        for (int i = 0; i < n_particles; i++)
-        {
-            c[i].size = _particleSize;
-        }
 
         while (true) {
-            //Debug.Log($"Iteration {iter++}");
             //MAIN ITERATION
             //incompressible Schroedinger flow
             ISF.update_space();
@@ -133,54 +163,111 @@ public class SFParticles : MonoBehaviour
 
             Particles.calculate_movement(vel);
 
-
             float[] px = Particles.x;
             float[] py = Particles.y;
             float[] pz = Particles.z;
-            
 
             for (int ii = 0; ii < n_particles; ++ii)
             {
-                var pos = new Vector3(px[ii], py[ii], pz[ii]);
-                float3 p = new float3(px[ii], py[ii], pz[ii]);
-                
-                var lastPose = c[ii].position;
-                c[ii].position = pos;
-                c[ii].velocity = (pos - lastPose);
-                var cc = c[ii].velocity.normalized;
-                c[ii].color = new Color(cc.x, cc.y, cc.z);
-
-                //c[ii].size = _particleSize;
+                p[ii] = new float3(px[ii], py[ii], pz[ii]);
             }
 
-            lock (pz) {
-                cloud = c;
+            lock (lk)
+            {
+                _isReady = true;
             }
 
             if (UnityThreading.ActionThread.CurrentThread.ShouldStop)
                 return; // finish
         }
-
     }
-
-    [SerializeField] private Mesh _mesh;
-    [SerializeField] private Material _material;
-
-    private Matrix4x4[] _matrices;
-    private RenderParams _rp;
-
-    private int ii;
     
     public void Update()
     {
-        if (cloud != null)
+        if (_isReady)
         {
-            particleSystem.SetParticles(cloud, cloud.Length);
+            if (_world == null) return;
+            _system.Update(_world.Unmanaged);
         }
     }
-    
+        
     private void OnDestroy()
     {
+        //_world.DestroySystem(_system);
+        
         myThread.Dispose();
+    }
+}
+
+public struct SpawnerPosition : IComponentData
+{
+    public float3 Value;
+    public int Index;
+}
+
+public struct IndexComponent : IComponentData
+{
+    public int Index;
+}
+
+[BurstCompile]
+[DisableAutoCreation]
+public partial struct SpawnerSystem : ISystem
+{
+    public void OnCreate(ref SystemState state)
+    {
+        var prefab = SystemAPI.GetSingleton<Spawner>().Prefab;
+        var scale = SystemAPI.GetComponent<LocalTransform>(prefab).Scale * 0.1f;
+        var buffer = SystemAPI.GetSingleton<BeginSimulationEntityCommandBufferSystem.Singleton>().CreateCommandBuffer(state.WorldUnmanaged);
+
+        for (int i = 0; i < 100000; i++)
+        {
+            var entity = buffer.Instantiate(prefab);
+            var pos = float3.zero;
+            buffer.AddComponent(entity, new SpawnerPosition { Value = pos.y, Index = i});
+            //buffer.AddComponent(entity, new IndexComponent() { Index = i });
+            buffer.SetComponent(entity, LocalTransform.FromPosition(pos).ApplyScale(scale));
+        }
+
+        //int i = 0;
+        //MovingController.SetPositions((_, pos) =>
+        //{
+        //    var entity = buffer.Instantiate(prefab);
+        //    buffer.AddComponent(entity, new SpawnerPosition { Value = pos.y, Index = i++});
+        //    buffer.SetComponent(entity, LocalTransform.FromPosition(pos).ApplyScale(scale));
+        //});
+    }
+
+    [BurstCompile]
+    public void OnUpdate(ref SystemState state) =>
+        new SpawnerJob { Moment = (float)SystemAPI.Time.ElapsedTime}
+            .ScheduleParallel(state.Dependency).Complete();
+}
+
+[BurstCompile]
+[StructLayout(LayoutKind.Auto)]
+public partial struct SpawnerJob : IJobEntity
+{
+    public float Moment;
+
+    [BurstCompile]
+    private void Execute(SpawnerAspect aspect)
+    {
+        aspect.UpdateLocalTransformFromSpawnerPosition(Moment);
+    }
+}
+
+public readonly partial struct SpawnerAspect : IAspect
+{
+    private readonly RefRW<LocalTransform> _localTransform;
+    private readonly RefRO<SpawnerPosition> _targetPosition;
+
+    public void UpdateLocalTransformFromSpawnerPosition(float moment)
+    {
+        //(_localTransform.ValueRW.Position, _localTransform.ValueRW.Rotation) =
+         //   _localTransform.ValueRW.Position.CalculatePosBurst(_targetPosition.ValueRO.Value.y, moment);
+        _localTransform.ValueRW.Position = SFDOTS.p[_targetPosition.ValueRO.Index];
+        //_localTransform.ValueRW.Scale = 0.1f;
+        _localTransform.ValueRW.Rotation = quaternion.identity;
     }
 }

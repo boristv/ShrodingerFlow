@@ -2,13 +2,18 @@
 <project version="4">
   <component name="ChangeListManager">
     <list default="true" id="c5e3aedc-ed11-4add-bd21-3ad7ac71f4e0" name="Default Changelist" comment="">
-      <change beforePath="$PROJECT_DIR$/Assets/Scenes/SF/particle.mat" beforeDir="false" afterPath="$PROJECT_DIR$/Assets/Scenes/SF/particle.mat" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/.idea.ShrodingerFlow/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.idea.ShrodingerFlow/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Assets/Scenes/JetExample/jet_particle.mat" beforeDir="false" afterPath="$PROJECT_DIR$/Assets/Scenes/JetExample/jet_particle.mat" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Assets/Scenes/JobAndBurst/JobBurstExample.unity" beforeDir="false" afterPath="$PROJECT_DIR$/Assets/Scenes/JobAndBurst/JobBurstExample.unity" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Assets/Scenes/JobAndBurst/SFJobBurst.cs" beforeDir="false" afterPath="$PROJECT_DIR$/Assets/Scenes/JobAndBurst/SFJobBurst.cs" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Assets/Scenes/SFParticles.cs" beforeDir="false" afterPath="$PROJECT_DIR$/Assets/Scenes/SFParticles.cs" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Assets/Scenes/SampleScene.unity" beforeDir="false" afterPath="$PROJECT_DIR$/Assets/Scenes/SampleScene.unity" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Assets/TestMat.mat" beforeDir="false" afterPath="$PROJECT_DIR$/Assets/TestMat.mat" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Packages/manifest.json" beforeDir="false" afterPath="$PROJECT_DIR$/Packages/manifest.json" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Packages/packages-lock.json" beforeDir="false" afterPath="$PROJECT_DIR$/Packages/packages-lock.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/ProjectSettings/ProjectSettings.asset" beforeDir="false" afterPath="$PROJECT_DIR$/ProjectSettings/ProjectSettings.asset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/ProjectSettings/ProjectVersion.txt" beforeDir="false" afterPath="$PROJECT_DIR$/ProjectSettings/ProjectVersion.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/ProjectSettings/GraphicsSettings.asset" beforeDir="false" afterPath="$PROJECT_DIR$/ProjectSettings/GraphicsSettings.asset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/ProjectSettings/InputManager.asset" beforeDir="false" afterPath="$PROJECT_DIR$/ProjectSettings/InputManager.asset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/ProjectSettings/QualitySettings.asset" beforeDir="false" afterPath="$PROJECT_DIR$/ProjectSettings/QualitySettings.asset" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -32,7 +37,11 @@
     <setting file="file://$APPLICATION_CONFIG_DIR$/resharper-host/DecompilerCache/decompiler/ae731a5bed454bcab45bce4ff6d780b6144200/9f/a12a9ed2/CudaDeviceVariable`1.cs" root0="SKIP_HIGHLIGHTING" />
     <setting file="file://$APPLICATION_CONFIG_DIR$/resharper-host/DecompilerCache/decompiler/ae731a5bed454bcab45bce4ff6d780b6144200/a9/91a6156a/CudaDeviceVariable`1.cs" root0="SKIP_HIGHLIGHTING" />
     <setting file="file://$APPLICATION_CONFIG_DIR$/resharper-host/DecompilerCache/decompiler/d3b66f0ad4e34a55b6ef91ab8487819313c000/ac/b0073e51/ComputeShader.cs" root0="SKIP_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Assets/Scenes/DOTS/SFDOTS.cs" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Assets/Scenes/SFParticles.cs" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Library/PackageCache/com.unity.entities@1.0.11/Unity.Entities/IJobChunk.cs" root0="SKIP_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Library/PackageCache/com.unity.entities@1.0.11/Unity.Entities/SystemState.cs" root0="SKIP_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Library/PackageCache/com.unity.entities@1.0.11/Unity.Entities/World.cs" root0="SKIP_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Library/PackageCache/com.unity.textmeshpro@3.0.6/Scripts/Runtime/TMP_SubMesh.cs" root0="SKIP_HIGHLIGHTING" />
   </component>
   <component name="IdeDocumentHistory">
