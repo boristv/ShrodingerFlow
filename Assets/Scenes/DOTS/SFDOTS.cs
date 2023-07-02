@@ -214,13 +214,19 @@ public struct IndexComponent : IComponentData
 [DisableAutoCreation]
 public partial struct SpawnerSystem : ISystem
 {
+    private NativeArray<float3> _nativePositions;
+    
     public void OnCreate(ref SystemState state)
     {
         var prefab = SystemAPI.GetSingleton<Spawner>().Prefab;
         var scale = SystemAPI.GetComponent<LocalTransform>(prefab).Scale * 0.1f;
         var buffer = SystemAPI.GetSingleton<BeginSimulationEntityCommandBufferSystem.Singleton>().CreateCommandBuffer(state.WorldUnmanaged);
+        
+        var count = 100000;
+        
+        _nativePositions = new NativeArray<float3>(count, Allocator.Persistent);
 
-        for (int i = 0; i < 100000; i++)
+        for (int i = 0; i < count; i++)
         {
             var entity = buffer.Instantiate(prefab);
             var pos = float3.zero;
@@ -239,9 +245,17 @@ public partial struct SpawnerSystem : ISystem
     }
 
     [BurstCompile]
-    public void OnUpdate(ref SystemState state) =>
-        new SpawnerJob { Moment = (float)SystemAPI.Time.ElapsedTime}
-            .ScheduleParallel(state.Dependency).Complete();
+    public void OnUpdate(ref SystemState state)
+    {
+        var p = SFDOTS.p;
+        for (int ii = 0; ii < 100000; ii++)
+        {
+            _nativePositions[ii] = p[ii];
+        }
+        var job = new SpawnerJob {Moment = (float) SystemAPI.Time.ElapsedTime};
+        job.Positions = _nativePositions;
+        job.ScheduleParallel(state.Dependency).Complete();
+    }
 }
 
 [BurstCompile]
@@ -249,11 +263,12 @@ public partial struct SpawnerSystem : ISystem
 public partial struct SpawnerJob : IJobEntity
 {
     public float Moment;
+    [ReadOnly] public NativeArray<float3> Positions;
 
     [BurstCompile]
     private void Execute(SpawnerAspect aspect)
     {
-        aspect.UpdateLocalTransformFromSpawnerPosition(Moment);
+        aspect.UpdateLocalTransformFromSpawnerPosition(Moment, Positions[aspect.Index]);
     }
 }
 
@@ -262,11 +277,13 @@ public readonly partial struct SpawnerAspect : IAspect
     private readonly RefRW<LocalTransform> _localTransform;
     private readonly RefRO<SpawnerPosition> _targetPosition;
 
-    public void UpdateLocalTransformFromSpawnerPosition(float moment)
+    public readonly int Index => _targetPosition.ValueRO.Index;
+
+    public void UpdateLocalTransformFromSpawnerPosition(float moment, float3 pos)
     {
         //(_localTransform.ValueRW.Position, _localTransform.ValueRW.Rotation) =
          //   _localTransform.ValueRW.Position.CalculatePosBurst(_targetPosition.ValueRO.Value.y, moment);
-        _localTransform.ValueRW.Position = SFDOTS.p[_targetPosition.ValueRO.Index];
+        _localTransform.ValueRW.Position = pos;
         //_localTransform.ValueRW.Scale = 0.1f;
         _localTransform.ValueRW.Rotation = quaternion.identity;
     }
