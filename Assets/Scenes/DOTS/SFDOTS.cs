@@ -36,7 +36,7 @@ public class SFDOTS : MonoBehaviour
     [SerializeField, Tooltip("Particles count")] public int n_particles = 100000;
     [SerializeField, Tooltip("Размер частиц")] private float _particleSize = 0.1f;
     
-    public static float3[] Positions;
+    public static NativeArray<float3> NativePositions;
     
     private ParticleSystem.Particle[] cloud;
     private int tmax = 85;
@@ -56,7 +56,7 @@ public class SFDOTS : MonoBehaviour
     
     private System.Collections.IEnumerator Start()
     {
-        Positions = new float3[n_particles];
+        NativePositions = new NativeArray<float3>(n_particles, Allocator.Persistent);
         
         Initialization();
         
@@ -141,7 +141,7 @@ public class SFDOTS : MonoBehaviour
 
         for (int ii = 0; ii < n_particles; ++ii)
         {
-            Positions[ii] = new float3(px[ii], py[ii], pz[ii]);
+            NativePositions[ii] = new float3(px[ii], py[ii], pz[ii]);
         }
     }
     
@@ -165,7 +165,7 @@ public struct InitialData : IComponentData
 [DisableAutoCreation]
 public partial struct SpawnerSystem : ISystem
 {
-    private NativeArray<float3> _nativePositions;
+    //private NativeArray<float3> _nativePositions;
     private int count;
     
     public void OnCreate(ref SystemState state)
@@ -176,7 +176,7 @@ public partial struct SpawnerSystem : ISystem
         
         count = SFDOTS.Instance.n_particles;
         
-        _nativePositions = new NativeArray<float3>(count, Allocator.Persistent);
+        //_nativePositions = new NativeArray<float3>(count, Allocator.Persistent);
 
         for (int i = 0; i < count; i++)
         {
@@ -190,12 +190,8 @@ public partial struct SpawnerSystem : ISystem
     [BurstCompile]
     public void OnUpdate(ref SystemState state)
     {
-        var p = SFDOTS.Positions;
-        for (int i = 0; i < count; i++)
-        {
-            _nativePositions[i] = p[i];
-        }
-        new SpawnerJob {Positions = _nativePositions}.ScheduleParallel(state.Dependency).Complete();
+        //_nativePositions = SFDOTS.NativePositions;
+        new SpawnerJob {Positions = SFDOTS.NativePositions}.ScheduleParallel(state.Dependency).Complete();
     }
 }
 
