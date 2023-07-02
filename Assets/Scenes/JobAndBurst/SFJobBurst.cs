@@ -7,7 +7,6 @@ using source;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
-using Unity.Mathematics;
 using float3 = Unity.Mathematics.float3;
 using Matrix4x4 = UnityEngine.Matrix4x4;
 using Quaternion = UnityEngine.Quaternion;
@@ -16,43 +15,35 @@ using Vector3 = UnityEngine.Vector3;
 
 public class SFJobBurst : MonoBehaviour
 {
-    float3[] p;
-    ParticleSystem.Particle[] cloud;
-    
-    bool bPointsUpdated = false;
     //PARAMETERS
     [Header("Начальные условия")]
     [SerializeField, Tooltip("Box size")] private int[] vol_size = { 10, 5, 5 };      // box size
     [SerializeField, Tooltip("Volume resolution")] private int[] vol_res = { 128, 64, 64 };    // volume resolution
     [SerializeField, Tooltip("Planck constant")] private float hbar = (float)0.1;           // Planck constant
     [SerializeField, Tooltip("Time step")] private float dt = 1 / (float)12;          // time step
-    int tmax = 85;
-    [SerializeField, Tooltip("Background velocity")] private float[] background_vel = {(float) -0.2, 0, 0};
-        
     
+    [SerializeField, Tooltip("Background velocity")] private float[] background_vel = {(float) -0.2, 0, 0};
     [SerializeField, Tooltip("First ring radius")] private float r1 = (float)1.5; 
     [SerializeField, Tooltip("Second ring radius")] private float r2 = (float)0.9;              
     [SerializeField] private float[] n1 = {-1,0,0};         
     [SerializeField] private float[] n2 = {-1,0,0};
 
-    [SerializeField, Tooltip("Particles count")] private int n_particles = 100000;
-
-    Velocity vel;
-    object lk= new object();
-
-    UnityThreading.ActionThread myThread;
-
-    [Header("Дополнительные настройки")] 
-    [SerializeField, Tooltip("Размер частиц")] private float _particleSize = 0.1f;
-    
     [Header("Начальное расположение частиц")] 
     [SerializeField] private Vector2 _boxSizeX = new Vector2(5, 5);
     [SerializeField] private Vector2 _boxSizeY = new Vector2(0.5f, 4.5f);
     [SerializeField] private Vector2 _boxSizeZ = new Vector2(0.5f, 4.5f);
 
+    [Header("Дополнительные настройки")] 
+    [SerializeField, Tooltip("Particles count")] private int n_particles = 100000;
+    [SerializeField, Tooltip("Размер частиц")] private float _particleSize = 0.1f;
     [SerializeField] private Mesh _mesh;
     [SerializeField] private Material _material;
+    
+    private ParticleSystem.Particle[] cloud;
+    private bool bPointsUpdated = false;
+    private Velocity vel;
 
+    private float3[] Positions;
     private ObjectPositionJob _job;
     private NativeArray<float3> _nativeP;
     private NativeArray<float> _nativeCubeYOffsets;
@@ -64,7 +55,7 @@ public class SFJobBurst : MonoBehaviour
     
     private void Start()
     {
-        p = new float3[n_particles];
+        Positions = new float3[n_particles];
         
         _rp = new RenderParams(_material);
         
@@ -81,10 +72,10 @@ public class SFJobBurst : MonoBehaviour
             Rotation = Quaternion.identity
         };
         
-        myThread = UnityThreadHelper.CreateThread(Worker);
+        Initialization();
     }
 
-    private void Worker()
+    private void Initialization()
     {
         float[] cen1 = { vol_size[0] / 2f, vol_size[1] / 2f, vol_size[2] / 2f };
         float[] cen2 = { vol_size[0] / 2f, vol_size[1] / 2f, vol_size[2] / 2f };
@@ -140,50 +131,41 @@ public class SFJobBurst : MonoBehaviour
         Particles.add_particles(x, y, z, n_particles);
 
         vel = new Velocity(ISF.properties.resx, ISF.properties.resy, ISF.properties.resz);
+    }
+    
+    private void SimulationStep()
+    {
+        //MAIN ITERATION
+        //incompressible Schroedinger flow
+        ISF.update_space();
 
-        while (true) {
-            //MAIN ITERATION
-            //incompressible Schroedinger flow
-            ISF.update_space();
+        //particle update
+        ISF.update_velocities(vel);
 
-            //particle update
-            ISF.update_velocities(vel);
+        Particles.calculate_movement(vel);
 
-            Particles.calculate_movement(vel);
+        float[] px = Particles.x;
+        float[] py = Particles.y;
+        float[] pz = Particles.z;
 
-            float[] px = Particles.x;
-            float[] py = Particles.y;
-            float[] pz = Particles.z;
-
-            for (int ii = 0; ii < n_particles; ++ii)
-            {
-                p[ii] = new float3(px[ii], py[ii], pz[ii]);
-            }
-
-            lock (lk)
-            {
-                _isReady = true;
-            }
-
-            if (UnityThreading.ActionThread.CurrentThread.ShouldStop)
-                return; // finish
+        for (int ii = 0; ii < n_particles; ++ii)
+        {
+            Positions[ii] = new float3(px[ii], py[ii], pz[ii]);
         }
     }
     
     public void Update()
     {
-        if (_isReady)
+        SimulationStep();
+        _job.Matrices = _nativeMatrices;
+        for (int ii = 0; ii < n_particles; ii++)
         {
-            _job.Matrices = _nativeMatrices;
-            for (int ii = 0; ii < n_particles; ii++)
-            {
-                _nativeP[ii] = p[ii];
-            }
-            _job.Positions = _nativeP;
-            _job.Schedule(_nativeMatrices.Length, 64).Complete();
-
-            Graphics.RenderMeshInstanced(_rp, _mesh, 0, _nativeMatrices);
+            _nativeP[ii] = Positions[ii];
         }
+        _job.Positions = _nativeP;
+        _job.Schedule(_nativeMatrices.Length, 64).Complete();
+
+        Graphics.RenderMeshInstanced(_rp, _mesh, 0, _nativeMatrices);
     }
         
     private void OnDestroy()
@@ -192,8 +174,6 @@ public class SFJobBurst : MonoBehaviour
         _nativeMatrices.Dispose();
         _nativeCubeYOffsets.Dispose();
         _nativeP.Dispose();
-        
-        myThread.Dispose();
     }
 }
 

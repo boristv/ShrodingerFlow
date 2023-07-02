@@ -44,10 +44,7 @@ public class SFDOTS : MonoBehaviour
     
     private SystemHandle _system;
     private World _world;
-    private UnityThreading.ActionThread myThread;
     private Velocity vel;
-    private object lk= new object();
-    private NativeArray<float3> _nativePositions;
     private bool _isReady;
 
     public static SFDOTS Instance;
@@ -61,10 +58,7 @@ public class SFDOTS : MonoBehaviour
     {
         Positions = new float3[n_particles];
         
-        var count = n_particles;
-        _nativePositions = new NativeArray<float3>(count, Allocator.Persistent);
-        
-        myThread = UnityThreadHelper.CreateThread(Worker);
+        Initialization();
         
         yield return new WaitForSeconds(0.5f);
 
@@ -72,7 +66,7 @@ public class SFDOTS : MonoBehaviour
         _system = _world.CreateSystem<SpawnerSystem>();
     }
 
-    private void Worker()
+    private void Initialization()
     {
         float[] cen1 = { vol_size[0] / 2f, vol_size[1] / 2f, vol_size[2] / 2f };
         float[] cen2 = { vol_size[0] / 2f, vol_size[1] / 2f, vol_size[2] / 2f };
@@ -128,50 +122,36 @@ public class SFDOTS : MonoBehaviour
         Particles.add_particles(x, y, z, n_particles);
 
         vel = new Velocity(ISF.properties.resx, ISF.properties.resy, ISF.properties.resz);
+    }
+    
+    private void SimulationStep()
+    {
+        //MAIN ITERATION
+        //incompressible Schroedinger flow
+        ISF.update_space();
 
-        while (true) {
-            //MAIN ITERATION
-            //incompressible Schroedinger flow
-            ISF.update_space();
+        //particle update
+        ISF.update_velocities(vel);
 
-            //particle update
-            ISF.update_velocities(vel);
+        Particles.calculate_movement(vel);
 
-            Particles.calculate_movement(vel);
+        float[] px = Particles.x;
+        float[] py = Particles.y;
+        float[] pz = Particles.z;
 
-            float[] px = Particles.x;
-            float[] py = Particles.y;
-            float[] pz = Particles.z;
-
-            for (int ii = 0; ii < n_particles; ++ii)
-            {
-                Positions[ii] = new float3(px[ii], py[ii], pz[ii]);
-            }
-
-            lock (lk)
-            {
-                _isReady = true;
-            }
-
-            if (UnityThreading.ActionThread.CurrentThread.ShouldStop)
-                return; // finish
+        for (int ii = 0; ii < n_particles; ++ii)
+        {
+            Positions[ii] = new float3(px[ii], py[ii], pz[ii]);
         }
     }
     
     public void Update()
     {
-        if (_isReady)
+        SimulationStep();
+        if (_world != null)
         {
-            if (_world == null) return;
             _system.Update(_world.Unmanaged);
         }
-    }
-        
-    private void OnDestroy()
-    {
-        //_world.DestroySystem(_system);
-        
-        myThread.Dispose();
     }
 }
 

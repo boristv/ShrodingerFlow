@@ -276,11 +276,11 @@ MonoBehaviour:
   - -1
   - 0
   - 0
-  n_particles: 100000
-  _particleSize: 0.1
   _boxSizeX: {x: 5, y: 5}
   _boxSizeY: {x: 0.5, y: 4.5}
   _boxSizeZ: {x: 0.5, y: 4.5}
+  n_particles: 100000
+  _particleSize: 0.1
   _mesh: {fileID: 10210, guid: 0000000000000000e000000000000000, type: 0}
   _material: {fileID: 2100000, guid: 27650755a2c426d4c8a1003d5f7f313a, type: 2}
 --- !u!4 &224355498

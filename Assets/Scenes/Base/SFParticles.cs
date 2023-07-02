@@ -5,58 +5,44 @@ using source.assets.Discrete_space;
 using source.assets.Particles;
 using source;
 using float3 = Unity.Mathematics.float3;
-using Matrix4x4 = UnityEngine.Matrix4x4;
-using Quaternion = UnityEngine.Quaternion;
 using Vector2 = UnityEngine.Vector2;
 using Vector3 = UnityEngine.Vector3;
 
 public class SFParticles : MonoBehaviour
 {
-    ParticleSystem.Particle[] cloud;
-    bool bPointsUpdated = false;
-    private ParticleSystem particleSystem;
     //PARAMETERS
     [Header("Начальные условия")]
     [SerializeField, Tooltip("Box size")] private int[] vol_size = { 10, 5, 5 };      // box size
     [SerializeField, Tooltip("Volume resolution")] private int[] vol_res = { 128, 64, 64 };    // volume resolution
     [SerializeField, Tooltip("Planck constant")] private float hbar = (float)0.1;           // Planck constant
     [SerializeField, Tooltip("Time step")] private float dt = 1 / (float)12;          // time step
-    int tmax = 85;
     [SerializeField, Tooltip("Background velocity")] private float[] background_vel = {(float) -0.2, 0, 0};
-        
-    
     [SerializeField, Tooltip("First ring radius")] private float r1 = (float)1.5; 
     [SerializeField, Tooltip("Second ring radius")] private float r2 = (float)0.9;              
     [SerializeField] private float[] n1 = {-1,0,0};         
     [SerializeField] private float[] n2 = {-1,0,0};
 
-    [SerializeField, Tooltip("Particles count")] private int n_particles = 100000;
-
-    Velocity vel;
-    object lk= new object();
-
-    UnityThreading.ActionThread myThread;
-
-    [Header("Дополнительные настройки")] 
-    [SerializeField, Tooltip("Размер частиц")] private float _particleSize = 0.1f;
-    
     [Header("Начальное расположение частиц")] 
     [SerializeField] private Vector2 _boxSizeX = new Vector2(5, 5);
     [SerializeField] private Vector2 _boxSizeY = new Vector2(0.5f, 4.5f);
     [SerializeField] private Vector2 _boxSizeZ = new Vector2(0.5f, 4.5f);
 
-    private int iter;
-    private int upd;
+    [Header("Дополнительные настройки")] 
+    [SerializeField, Tooltip("Particles count")] private int n_particles = 100000;
+    [SerializeField, Tooltip("Размер частиц")] private float _particleSize = 0.1f;
+    
+    private Velocity vel;
+    private ParticleSystem.Particle[] cloud;
+    private bool bPointsUpdated = false;
+    private ParticleSystem particleSystem;
     
     private void Start()
     {
-        _rp = new RenderParams(_material);
-        _matrices = new Matrix4x4[n_particles];
         particleSystem = GetComponent<ParticleSystem>();
-        myThread = UnityThreadHelper.CreateThread(Worker);
+        Initialization();
     }
-
-    private void Worker()
+    
+    private void Initialization()
     {
         float[] cen1 = { vol_size[0] / 2f, vol_size[1] / 2f, vol_size[2] / 2f };
         float[] cen2 = { vol_size[0] / 2f, vol_size[1] / 2f, vol_size[2] / 2f };
@@ -104,9 +90,6 @@ public class SFParticles : MonoBehaviour
         System.Random rnd = new System.Random();
         for (int i = 0; i < n_particles; i++)
         {
-            /*y[i] = (float)(rnd.NextDouble() * 4 + 0.5);
-            z[i] = (float)(rnd.NextDouble() * 4 + 0.5);
-            x[i] = 5;*/
             x[i] = (float) (rnd.NextDouble() * (_boxSizeX.y - _boxSizeX.x) + _boxSizeX.x);
             y[i] = (float) (rnd.NextDouble() * (_boxSizeY.y - _boxSizeY.x) + _boxSizeY.x);
             z[i] = (float) (rnd.NextDouble() * (_boxSizeZ.y - _boxSizeZ.x) + _boxSizeZ.x);
@@ -115,72 +98,49 @@ public class SFParticles : MonoBehaviour
         Particles.add_particles(x, y, z, n_particles);
 
         vel = new Velocity(ISF.properties.resx, ISF.properties.resy, ISF.properties.resz);
-        var c = new ParticleSystem.Particle[n_particles];
+        
+        cloud = new ParticleSystem.Particle[n_particles];
         
         for (int i = 0; i < n_particles; i++)
         {
-            c[i].size = _particleSize;
+            cloud[i].size = _particleSize;
         }
-
-        while (true) {
-            //Debug.Log($"Iteration {iter++}");
-            //MAIN ITERATION
-            //incompressible Schroedinger flow
-            ISF.update_space();
-
-            //particle update
-            ISF.update_velocities(vel);
-
-            Particles.calculate_movement(vel);
-
-
-            float[] px = Particles.x;
-            float[] py = Particles.y;
-            float[] pz = Particles.z;
-            
-
-            for (int ii = 0; ii < n_particles; ++ii)
-            {
-                var pos = new Vector3(px[ii], py[ii], pz[ii]);
-                float3 p = new float3(px[ii], py[ii], pz[ii]);
-                
-                var lastPose = c[ii].position;
-                c[ii].position = pos;
-                c[ii].velocity = (pos - lastPose);
-                var cc = c[ii].velocity.normalized;
-                c[ii].color = new Color(cc.x, cc.y, cc.z);
-
-                //c[ii].size = _particleSize;
-            }
-
-            lock (pz) {
-                cloud = c;
-            }
-
-            if (UnityThreading.ActionThread.CurrentThread.ShouldStop)
-                return; // finish
-        }
-
     }
+    
+    private void SimulationStep()
+    {
+        //MAIN ITERATION
+        //incompressible Schroedinger flow
+        ISF.update_space();
 
-    [SerializeField] private Mesh _mesh;
-    [SerializeField] private Material _material;
+        //particle update
+        ISF.update_velocities(vel);
 
-    private Matrix4x4[] _matrices;
-    private RenderParams _rp;
+        Particles.calculate_movement(vel);
 
-    private int ii;
+        float[] px = Particles.x;
+        float[] py = Particles.y;
+        float[] pz = Particles.z;
+
+        for (int ii = 0; ii < n_particles; ++ii)
+        {
+            var pos = new Vector3(px[ii], py[ii], pz[ii]);
+            float3 p = new float3(px[ii], py[ii], pz[ii]);
+                
+            var lastPose = cloud[ii].position;
+            cloud[ii].position = pos;
+            cloud[ii].velocity = (pos - lastPose);
+            var cc = cloud[ii].velocity.normalized;
+            cloud[ii].color = new Color(cc.x, cc.y, cc.z);
+        }
+    }
     
     public void Update()
     {
+        SimulationStep();
         if (cloud != null)
         {
             particleSystem.SetParticles(cloud, cloud.Length);
         }
-    }
-    
-    private void OnDestroy()
-    {
-        myThread.Dispose();
     }
 }
