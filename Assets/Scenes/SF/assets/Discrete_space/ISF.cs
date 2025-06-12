@@ -17,6 +17,13 @@ namespace source.assets.Discrete_space
         private static CudaDeviceVariable<cuFloatComplex> _mask, _fac; // Fourier coefficient for solving Schroedinger eq (Коэффициент Фурье)
         private static float t = 0;
         private static float[,,] _sx, _sy, _sz;
+        
+        private static float k_cutoff = 4.0f;
+
+        public static void SetLESFilter(float cutoff)
+        {
+            k_cutoff = cutoff;
+        }
             
         public static void Init(int[] volSize, int[] volRes, float hbar, float dt) // vol_size::NTuple{ 3}, vol_res::NTuple{3}, hbar, dt)
         { 
@@ -115,6 +122,18 @@ namespace source.assets.Discrete_space
 
             ISFKernels.shift.Run(psi1.DevicePointer, properties.resx, properties.resy, properties.resz, properties.num);
             ISFKernels.shift.Run(psi2.DevicePointer, properties.resx, properties.resy, properties.resz, properties.num);
+            
+            // --- LES фильтрация: умножаем на фильтр по модулю волнового числа ---
+            ISFKernels.apply_les_filter.Run(psi1.DevicePointer,
+                properties.resx, properties.resy, properties.resz,
+                properties.sizex, properties.sizey, properties.sizez,
+                k_cutoff
+            );
+            ISFKernels.apply_les_filter.Run(psi2.DevicePointer,
+                properties.resx, properties.resy, properties.resz,
+                properties.sizex, properties.sizey, properties.sizez,
+                k_cutoff
+            );
 
             ISFKernels.mul_each.Run(psi1.DevicePointer, _mask.DevicePointer);
             ISFKernels.mul_each.Run(psi2.DevicePointer, _mask.DevicePointer);

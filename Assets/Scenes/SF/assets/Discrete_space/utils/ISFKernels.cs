@@ -7,6 +7,7 @@ namespace source.assets.Discrete_space.utils
     public static class ISFKernels
     {
         public static CudaKernel staggered, div, velocity_one, normalize, gauge, shift, mul_each, copy, fft_norm;
+        public static CudaKernel apply_les_filter;
 
         public static void Init(SpaceProperties properties)
         {
@@ -45,6 +46,15 @@ namespace source.assets.Discrete_space.utils
             fft_norm = KernelLoader.load_kernel("fft_norm");
             fft_norm.BlockDimensions = new dim3(1, 1, 1);
             fft_norm.GridDimensions = new dim3(properties.num, 1, 1);
+            
+            apply_les_filter = KernelLoader.load_kernel("apply_les_filter");
+// Подбираем блоки под объём
+            apply_les_filter.BlockDimensions = new dim3(8, 8, 8);
+            apply_les_filter.GridDimensions = new dim3(
+                (properties.resx + 7) / 8,
+                (properties.resy + 7) / 8,
+                (properties.resz + 7) / 8
+            );
         }
     }
 }

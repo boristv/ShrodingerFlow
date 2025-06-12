@@ -31,6 +31,9 @@ public class SFParticles : MonoBehaviour
     [SerializeField, Tooltip("Particles count")] private int n_particles = 100000;
     [SerializeField, Tooltip("Размер частиц")] private float _particleSize = 0.1f;
     
+    [Header("LES фильтрация")] 
+    [SerializeField, Tooltip("LES filter cutoff frequency")] private float _kCutoff = 4.0f;
+    
     private Velocity vel;
     private ParticleSystem.Particle[] cloud;
     private bool bPointsUpdated = false;
@@ -49,6 +52,7 @@ public class SFParticles : MonoBehaviour
 
         //INITIALISATION
         ISF.Init(vol_size, vol_res, hbar, dt);
+        ISF.SetLESFilter(_kCutoff);
         Particles.init(n_particles);
 
         //init psi
