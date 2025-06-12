@@ -1,5 +1,5 @@
 extern "C" __global__
-void apply_les_filter(cuFloatComplex* psi, int Nx, int Ny, int Nz,
+void apply_les_filter(float2* psi, int Nx, int Ny, int Nz,
                       float sizex, float sizey, float sizez, float k_cutoff)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -23,7 +23,7 @@ void apply_les_filter(cuFloatComplex* psi, int Nx, int Ny, int Nz,
     float k_mag2 = kx * kx + ky * ky + kz * kz;
     float filter = expf(-k_mag2 / (k_cutoff * k_cutoff));
 
-    cuFloatComplex val = psi[index];
+    float2 val = psi[index];
     psi[index].x = val.x * filter;
     psi[index].y = val.y * filter;
 }
