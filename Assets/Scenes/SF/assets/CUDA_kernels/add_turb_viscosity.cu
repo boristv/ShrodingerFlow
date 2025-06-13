@@ -1,7 +1,18 @@
-#include "common.cuh"
+// Индекс в объёме (строчное хранение: x – fastest)
+#define IDX(i,j,k,nx,ny)  (((k)*(ny) + (j))*(nx) + (i))
+
+// Безопасное обращение с обрезкой по краям
+__device__ __forceinline__ int safeIdx(int ii,int jj,int kk,
+                                       int nx,int ny,int nz)
+{
+    ii = max(0, min(ii, nx-1));
+    jj = max(0, min(jj, ny-1));
+    kk = max(0, min(kk, nz-1));
+    return IDX(ii,jj,kk,nx,ny);
+}
 
 /* ───────────────────────────────────────────────────────── *
-   3. Add SGS stress divergence                              *
+3. Add SGS stress divergence                              *
  * ───────────────────────────────────────────────────────── */
 extern "C" __global__
 void add_turb_viscosity(float *u, float *v, float *w,
@@ -10,27 +21,27 @@ void add_turb_viscosity(float *u, float *v, float *w,
                         int nx,int ny,int nz,
                         float dt)
 {
-    const int i = blockIdx.x*blockDim.x + threadIdx.x;
-    const int j = blockIdx.y*blockDim.y + threadIdx.y;
-    const int k = blockIdx.z*blockDim.z + threadIdx.z;
-    if (i>=nx || j>=ny || k>=nz) return;
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int j = blockIdx.y * blockDim.y + threadIdx.y;
+    const int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k >= nz) return;
 
-    auto idx=[&](int ii,int jj,int kk){return IDX(min(max(ii,0),nx-1), min(max(jj,0),ny-1), min(max(kk,0),nz-1), nx, ny);} ;
+    // νt в шести соседних ячейках + центр
+    float nuE = nuT[safeIdx(i+1, j  , k  , nx, ny, nz)];
+    float nuW = nuT[safeIdx(i-1, j  , k  , nx, ny, nz)];
+    float nuN = nuT[safeIdx(i  , j+1, k  , nx, ny, nz)];
+    float nuS = nuT[safeIdx(i  , j-1, k  , nx, ny, nz)];
+    float nuTz= nuT[safeIdx(i  , j  , k+1, nx, ny, nz)];
+    float nuB = nuT[safeIdx(i  , j  , k-1, nx, ny, nz)];
+    float nuC = nuT[IDX(i, j, k, nx, ny)];   // центр
 
-    // compute ν_t gradient (6‑point Laplacian‑like) & apply to velocity
-    float nuE = nuT[idx(i+1,j,k)];
-    float nuW = nuT[idx(i-1,j,k)];
-    float nuN = nuT[idx(i,j+1,k)];
-    float nuS = nuT[idx(i,j-1,k)];
-    float nuTz= nuT[idx(i,j,k+1)];
-    float nuB = nuT[idx(i,j,k-1)];
-    float nuC = nuT[idx(i,j,k)  ];
+    // «Лапласиан-подобный» вклад
+    float lap_nu = (nuE + nuW - 2.0f * nuC) / (dx * dx)
+                 + (nuN + nuS - 2.0f * nuC) / (dy * dy)
+                 + (nuTz + nuB - 2.0f * nuC) / (dz * dz);
 
-    float lap_nu = (nuE + nuW - 2.f*nuC)/(dx*dx)
-                 + (nuN + nuS - 2.f*nuC)/(dy*dy)
-                 + (nuTz+ nuB - 2.f*nuC)/(dz*dz);
-
-    u[IDX(i,j,k,nx,ny)] += dt * lap_nu;
-    v[IDX(i,j,k,nx,ny)] += dt * lap_nu;
-    w[IDX(i,j,k,nx,ny)] += dt * lap_nu;
+    int id = IDX(i, j, k, nx, ny);
+    u[id] += dt * lap_nu;
+    v[id] += dt * lap_nu;
+    w[id] += dt * lap_nu;
 }
