@@ -4,6 +4,7 @@ using System.Numerics;
 using ManagedCuda;
 using ManagedCuda.VectorTypes;
 using source.assets.Discrete_space.utils;
+using source.assets.Les;
 
 namespace source.assets.Discrete_space
 {
@@ -17,6 +18,13 @@ namespace source.assets.Discrete_space
         private static CudaDeviceVariable<cuFloatComplex> _mask, _fac; // Fourier coefficient for solving Schroedinger eq (Коэффициент Фурье)
         private static float t = 0;
         private static float[,,] _sx, _sy, _sz;
+        
+        // Velocity-буферы, которыми будет оперировать LES
+        private static Velocity velCurrent;   // из ψ → U
+        private static Velocity velFiltered;  // отфильтрованный Ũ
+
+        // SGS-вязкость
+        private static CudaDeviceVariable<float> nuT;
             
         public static void Init(int[] volSize, int[] volRes, float hbar, float dt) // vol_size::NTuple{ 3}, vol_res::NTuple{3}, hbar, dt)
         { 
@@ -27,6 +35,18 @@ namespace source.assets.Discrete_space
             psi2 = new CudaDeviceVariable<cuFloatComplex>(properties.num);
             
             FFT.init(properties.resx, properties.resy, properties.resz);
+            
+            /* ----------  LES  ДОБАВЛЕНИЕ  ---------- */
+            // 1. Буферы скоростей
+            velCurrent  = new Velocity(properties.resx, properties.resy, properties.resz);
+            velFiltered = new Velocity(properties.resx, properties.resy, properties.resz);
+
+            // 2. SGS-вязкость (по ячейке)
+            nuT = new CudaDeviceVariable<float>(properties.num);
+
+            // 3. Инициализация LES-ядёр
+            LES.Init(properties);       // внутри — выставит grid/block, запомнит pointers
+            /* --------------------------------------- */
             
             _ix = Enumerable.Range(0, properties.resx).ToArray();
             _iy = Enumerable.Range(0, properties.resy).ToArray();
@@ -75,6 +95,7 @@ namespace source.assets.Discrete_space
             t += properties.dt;
             
             schroedinger_flow();
+            LES_step();
             Normalize();
             PressureProject();
         }
@@ -127,6 +148,14 @@ namespace source.assets.Discrete_space
 
             ISFKernels.fft_norm.Run(psi1.DevicePointer, properties.num);
             ISFKernels.fft_norm.Run(psi2.DevicePointer, properties.num);
+        }
+        
+        private static void LES_step()
+        {
+            velocity_oneForm(velCurrent);
+            LES.Filter(velCurrent, velFiltered, properties);
+            LES.ComputeNuT(velFiltered, properties);
+            LES.ApplySGS(velCurrent, properties);
         }
         
         private static void staggered_sharp(Velocity vel)
