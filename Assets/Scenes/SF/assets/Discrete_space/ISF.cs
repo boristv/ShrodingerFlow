@@ -97,7 +97,8 @@ namespace source.assets.Discrete_space
             schroedinger_flow();
             LES_step();
             Normalize();
-            PressureProject();
+            PressureProject(velCurrent);
+            //PressureProject();
         }
 
         public static void update_velocities(Velocity vel)
@@ -193,7 +194,21 @@ namespace source.assets.Discrete_space
             
             return res;
         }
-        
+
+        public static void PressureProject(Velocity v)
+        {
+            //var v = new Velocity(properties.resx, properties.resy, properties.resz);
+            //velocity_oneForm(v);
+            var div = Div(v);
+
+            var q = PoissonSolve(div);
+
+            ISFKernels.gauge.Run(psi1.DevicePointer, psi2.DevicePointer, q.DevicePointer, properties.num);
+
+            div.Dispose();
+            q.Dispose();
+        }
+
         public static void PressureProject()
         {
             var v = new Velocity(properties.resx, properties.resy, properties.resz);
