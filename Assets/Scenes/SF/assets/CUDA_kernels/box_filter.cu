@@ -1,4 +1,6 @@
-#include "common.cuh"
+//#include "common.cuh"
+
+#define IDX(i,j,k,nx,ny)  (((k)*(ny) + (j))*(nx) + (i))
 
 /* ───────────────────────────────────────────────────────── *
 1. 3×3×3 box filter                                     *
@@ -11,7 +13,7 @@ void box_filter(float *dst, const float *src,
     const int j = blockIdx.y*blockDim.y + threadIdx.y;
     const int k = blockIdx.z*blockDim.z + threadIdx.z;
     if (i>=nx || j>=ny || k>=nz) return;
-
+    
     float sum=0.f;
     #pragma unroll
     for (int dz=-1; dz<=1; ++dz)

@@ -12,7 +12,7 @@ __device__ __forceinline__ int safeIdx(int ii,int jj,int kk,
 }
 
 // Вычисляет |S| и SGS‑ν_t по Smagorinsky
-extern "C" __global__ void computeStrain(float *nuT,
+extern "C" __global__ void compute_strain(float *nuT,
                               const float *u,const float *v,const float *w,
                               float dx,float dy,float dz,
                               float Cs,float Delta,

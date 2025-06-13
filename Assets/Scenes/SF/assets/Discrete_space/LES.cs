@@ -39,9 +39,9 @@ namespace source.assets.Les
             nu_t = new CudaDeviceVariable<float>(p.num);
 
             // 2. Загрузка PTX / CUDA ядёр
-            boxFilter        = KernelLoader.load_kernel("boxFilter");
-            computeStrain    = KernelLoader.load_kernel("computeStrain");
-            addTurbViscosity = KernelLoader.load_kernel("addTurbViscosity");
+            boxFilter        = KernelLoader.load_kernel("box_filter");
+            computeStrain    = KernelLoader.load_kernel("compute_strain");
+            addTurbViscosity = KernelLoader.load_kernel("add_turb_viscosity");
 
             // 3. Настройка сетки
             block = new dim3(8, 8, 8);
@@ -56,7 +56,7 @@ namespace source.assets.Les
 
             computeStrain.BlockDimensions   = block;
             computeStrain.GridDimensions    = grid;
-
+            
             addTurbViscosity.BlockDimensions = block;
             addTurbViscosity.GridDimensions  = grid;
         }
