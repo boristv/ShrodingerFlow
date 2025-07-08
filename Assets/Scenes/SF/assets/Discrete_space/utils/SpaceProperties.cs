@@ -11,8 +11,8 @@ namespace source.assets.Discrete_space.utils
          public float hbar;                  // reduced Planck constant (Понижение постоянной Планка)
          
          // === LES parameters (NEW) ===
-         public float Cs        = 0.17f;  // Smagorinsky constant
-         public float filterFac = 2.5f;   // Δ = filterFac * min(dx,dy,dz)
+         public float Cs        = 0.07f;  // Smagorinsky constant
+         public float filterFac = 4.0f;   // Δ = filterFac * min(dx,dy,dz)
 
          public SpaceProperties(int[] vol_size, int[] vol_res, float HBAR, float DT)
          {
