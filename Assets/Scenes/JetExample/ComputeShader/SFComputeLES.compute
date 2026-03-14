@@ -92,20 +92,25 @@ void AddTurbViscosity(uint3 id : SV_DispatchThreadID)
     int k = (int)id.z;
     if (i >= _NX || j >= _NY || k >= _NZ) return;
 
-    float nuE = _NuT[safeIdx(i+1, j, k)];
-    float nuW = _NuT[safeIdx(i-1, j, k)];
-    float nuN = _NuT[safeIdx(i, j+1, k)];
-    float nuS = _NuT[safeIdx(i, j-1, k)];
-    float nuT = _NuT[safeIdx(i, j, k+1)];
-    float nuB = _NuT[safeIdx(i, j, k-1)];
-    float nuC = _NuT[IDX(i, j, k)];
-
-    float lap = (nuE + nuW - 2.0 * nuC) / (_DX * _DX)
-              + (nuN + nuS - 2.0 * nuC) / (_DY * _DY)
-              + (nuT + nuB - 2.0 * nuC) / (_DZ * _DZ);
-
     int id_flat = IDX(i, j, k);
-    _U[id_flat] += _DT * lap;
-    _V[id_flat] += _DT * lap;
-    _W[id_flat] += _DT * lap;
+    float nuC = _NuT[id_flat];
+
+    float uC = _U[id_flat];
+    float lapU = (_U[safeIdx(i+1,j,k)] + _U[safeIdx(i-1,j,k)] - 2.0 * uC) / (_DX * _DX)
+               + (_U[safeIdx(i,j+1,k)] + _U[safeIdx(i,j-1,k)] - 2.0 * uC) / (_DY * _DY)
+               + (_U[safeIdx(i,j,k+1)] + _U[safeIdx(i,j,k-1)] - 2.0 * uC) / (_DZ * _DZ);
+
+    float vC = _V[id_flat];
+    float lapV = (_V[safeIdx(i+1,j,k)] + _V[safeIdx(i-1,j,k)] - 2.0 * vC) / (_DX * _DX)
+               + (_V[safeIdx(i,j+1,k)] + _V[safeIdx(i,j-1,k)] - 2.0 * vC) / (_DY * _DY)
+               + (_V[safeIdx(i,j,k+1)] + _V[safeIdx(i,j,k-1)] - 2.0 * vC) / (_DZ * _DZ);
+
+    float wC = _W[id_flat];
+    float lapW = (_W[safeIdx(i+1,j,k)] + _W[safeIdx(i-1,j,k)] - 2.0 * wC) / (_DX * _DX)
+               + (_W[safeIdx(i,j+1,k)] + _W[safeIdx(i,j-1,k)] - 2.0 * wC) / (_DY * _DY)
+               + (_W[safeIdx(i,j,k+1)] + _W[safeIdx(i,j,k-1)] - 2.0 * wC) / (_DZ * _DZ);
+
+    _U[id_flat] += _DT * nuC * lapU;
+    _V[id_flat] += _DT * nuC * lapV;
+    _W[id_flat] += _DT * nuC * lapW;
 }

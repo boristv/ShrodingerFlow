@@ -44,6 +44,7 @@ public class SFJetCS : SFBase
     private float _omega;
     private Vector3 _volSizeV3;
     private bool _initialized;
+    private int _compactCounter;
 
     private void Start()
     {
@@ -129,6 +130,15 @@ public class SFJetCS : SFBase
         {
             iterator++;
             SimulationStep();
+        }
+
+        _compactCounter++;
+        if (_compactCounter >= 60)
+        {
+            _compactCounter = 0;
+            _particles.CompactParticles(_pxArr, _pyArr, _pzArr,
+                vol_size[0], vol_size[1], vol_size[2]);
+            _particlesCount = _particles.Size;
         }
 
         UpdateParticleSystem();

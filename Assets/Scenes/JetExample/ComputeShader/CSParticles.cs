@@ -14,6 +14,9 @@ namespace ComputeShaderSF
         private ComputeBuffer _k3x, _k3y, _k3z;
         private ComputeBuffer _k4x, _k4y, _k4z;
 
+        private ComputeBuffer _stagingX, _stagingY, _stagingZ;
+        private int _stagingCapacity;
+
         private int _size;
         private int _maxCnt;
         private float _dt;
@@ -62,12 +65,10 @@ namespace ComputeShaderSF
         {
             if (_size + count > _maxCnt) return;
 
-            var newX = new ComputeBuffer(count, sizeof(float));
-            var newY = new ComputeBuffer(count, sizeof(float));
-            var newZ = new ComputeBuffer(count, sizeof(float));
-            newX.SetData(xx, 0, 0, count);
-            newY.SetData(yy, 0, 0, count);
-            newZ.SetData(zz, 0, 0, count);
+            EnsureStagingCapacity(count);
+            _stagingX.SetData(xx, 0, 0, count);
+            _stagingY.SetData(yy, 0, 0, count);
+            _stagingZ.SetData(zz, 0, 0, count);
 
             _shader.SetInt("_ParticleCount", count);
             _shader.SetInt("_ParticleOffset", _size);
@@ -75,16 +76,26 @@ namespace ComputeShaderSF
             _shader.SetBuffer(_addKernel, "_PosX", _x);
             _shader.SetBuffer(_addKernel, "_PosY", _y);
             _shader.SetBuffer(_addKernel, "_PosZ", _z);
-            _shader.SetBuffer(_addKernel, "_NewX", newX);
-            _shader.SetBuffer(_addKernel, "_NewY", newY);
-            _shader.SetBuffer(_addKernel, "_NewZ", newZ);
+            _shader.SetBuffer(_addKernel, "_NewX", _stagingX);
+            _shader.SetBuffer(_addKernel, "_NewY", _stagingY);
+            _shader.SetBuffer(_addKernel, "_NewZ", _stagingZ);
             _shader.Dispatch(_addKernel, (count + 255) / 256, 1, 1);
 
-            newX.Release();
-            newY.Release();
-            newZ.Release();
-
             _size += count;
+        }
+
+        private void EnsureStagingCapacity(int needed)
+        {
+            if (_stagingCapacity >= needed) return;
+
+            _stagingX?.Release();
+            _stagingY?.Release();
+            _stagingZ?.Release();
+
+            _stagingCapacity = Mathf.Max(needed, 256);
+            _stagingX = new ComputeBuffer(_stagingCapacity, sizeof(float));
+            _stagingY = new ComputeBuffer(_stagingCapacity, sizeof(float));
+            _stagingZ = new ComputeBuffer(_stagingCapacity, sizeof(float));
         }
 
         public void CalculateMovement(CSVelocity vel)
@@ -159,6 +170,43 @@ namespace ComputeShaderSF
             _z.GetData(outZ, 0, 0, _size);
         }
 
+        public int CompactParticles(float[] px, float[] py, float[] pz,
+            float maxX, float maxY, float maxZ)
+        {
+            if (_size == 0) return 0;
+
+            _x.GetData(px, 0, 0, _size);
+            _y.GetData(py, 0, 0, _size);
+            _z.GetData(pz, 0, 0, _size);
+
+            int alive = 0;
+            for (int i = 0; i < _size; i++)
+            {
+                if (px[i] < 0f || px[i] > maxX ||
+                    py[i] < 0f || py[i] > maxY ||
+                    pz[i] < 0f || pz[i] > maxZ)
+                    continue;
+
+                if (alive != i)
+                {
+                    px[alive] = px[i];
+                    py[alive] = py[i];
+                    pz[alive] = pz[i];
+                }
+                alive++;
+            }
+
+            if (alive < _size)
+            {
+                _x.SetData(px, 0, 0, alive);
+                _y.SetData(py, 0, 0, alive);
+                _z.SetData(pz, 0, 0, alive);
+                _size = alive;
+            }
+
+            return alive;
+        }
+
         public void Dispose()
         {
             _x?.Release(); _y?.Release(); _z?.Release();
@@ -166,6 +214,7 @@ namespace ComputeShaderSF
             _k2x?.Release(); _k2y?.Release(); _k2z?.Release();
             _k3x?.Release(); _k3y?.Release(); _k3z?.Release();
             _k4x?.Release(); _k4y?.Release(); _k4z?.Release();
+            _stagingX?.Release(); _stagingY?.Release(); _stagingZ?.Release();
         }
     }
 }

@@ -149,7 +149,7 @@ void VelocityOne(uint3 id : SV_DispatchThreadID)
     float2 s = float2(c1.x * mul1.x - c1.y * mul1.y + c2.x * mul2.x - c2.y * mul2.y,
                       c1.x * mul1.y + c1.y * mul1.x + c2.x * mul2.y + c2.y * mul2.x);
     float r = atan2(s.y, s.x);
-    if (abs(s.y) < 0.00001) r *= -1;
+    if (abs(s.y) < 0.00001) r = 0.0;
     _VZ[i] = r * _Hbar;
 
     // Y velocity: next neighbor in y with wrapping
@@ -160,7 +160,7 @@ void VelocityOne(uint3 id : SV_DispatchThreadID)
     s = float2(c1.x * mul1.x - c1.y * mul1.y + c2.x * mul2.x - c2.y * mul2.y,
                c1.x * mul1.y + c1.y * mul1.x + c2.x * mul2.y + c2.y * mul2.x);
     r = atan2(s.y, s.x);
-    if (abs(s.y) < 0.00001) r *= -1;
+    if (abs(s.y) < 0.00001) r = 0.0;
     _VY[i] = r * _Hbar;
 
     // X velocity: next neighbor in x with wrapping
@@ -170,7 +170,7 @@ void VelocityOne(uint3 id : SV_DispatchThreadID)
     s = float2(c1.x * mul1.x - c1.y * mul1.y + c2.x * mul2.x - c2.y * mul2.y,
                c1.x * mul1.y + c1.y * mul1.x + c2.x * mul2.y + c2.y * mul2.x);
     r = atan2(s.y, s.x);
-    if (abs(s.y) < 0.00001) r *= -1;
+    if (abs(s.y) < 0.00001) r = 0.0;
     _VX[i] = r * _Hbar;
 }
 
