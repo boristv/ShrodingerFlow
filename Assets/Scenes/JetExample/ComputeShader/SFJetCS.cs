@@ -22,8 +22,8 @@ public class SFJetCS : SFBase
     [SerializeField] private int n_particles = 50;
 
     [Header("Дополнительные настройки")]
-    [SerializeField] private float _particleSize = 0.1f;
-    [SerializeField] private int _stepsPerFrame = 1;
+    [SerializeField] private float _particleSize = 0.05f;
+    [SerializeField] private int _stepsPerFrame = 5;
 
     private CSISF _isf;
     private CSParticles _particles;

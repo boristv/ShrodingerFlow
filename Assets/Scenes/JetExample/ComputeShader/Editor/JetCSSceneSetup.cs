@@ -46,7 +46,7 @@ public static class JetCSSceneSetup
         var ps = go.AddComponent<ParticleSystem>();
 
         var main = ps.main;
-        main.maxParticles = 50000;
+        main.maxParticles = 1000;
         main.startLifetime = 9999f;
         main.startSpeed = 0f;
         main.startSize = 0.05f;

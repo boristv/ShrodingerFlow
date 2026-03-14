@@ -202,7 +202,7 @@ namespace ComputeShaderSF
 
         private void VelocityOneForm(CSVelocity v)
         {
-            VelocityOneForm(v, hbar);
+            VelocityOneForm(v, 1.0f);
         }
 
         private void VelocityOneForm(CSVelocity v, float h)

@@ -31,10 +31,17 @@ namespace ComputeShaderSF
                 _resY * _resZ, _resY * _resZ, _resX * _resY * _resZ, inverse);
         }
 
+        private static int IntLog2(int n)
+        {
+            int result = 0;
+            while (n > 1) { n >>= 1; result++; }
+            return result;
+        }
+
         private void FFT1DAlongAxis(ComputeBuffer data, int length, int stride,
             int count, int innerSize, int outerSize, bool inverse)
         {
-            int log2N = (int)Mathf.Log(length, 2);
+            int log2N = IntLog2(length);
 
             _shader.SetInt("_FFTLength", length);
             _shader.SetInt("_FFTStride", stride);
