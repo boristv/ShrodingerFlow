@@ -6,7 +6,7 @@ namespace ComputeShaderSF
     public class CSParticles : IDisposable
     {
         private ComputeShader _shader;
-        private int _addKernel, _interpKernel, _rk4Kernel;
+        private int _addKernel, _interpKernel, _rk4Kernel, _wrapKernel;
 
         private ComputeBuffer _x, _y, _z;
         private ComputeBuffer _k1x, _k1y, _k1z;
@@ -18,6 +18,7 @@ namespace ComputeShaderSF
         private int _stagingCapacity;
 
         private int _size;
+        private int _writeHead;
         private int _maxCnt;
         private float _dt;
         private int _torResX, _torResY, _torResZ;
@@ -32,6 +33,7 @@ namespace ComputeShaderSF
             _addKernel = shader.FindKernel("AddParticles");
             _interpKernel = shader.FindKernel("InterpolateVelocity");
             _rk4Kernel = shader.FindKernel("RK4Update");
+            _wrapKernel = shader.FindKernel("WrapPositions");
 
             _x = new ComputeBuffer(maxParticles, sizeof(float));
             _y = new ComputeBuffer(maxParticles, sizeof(float));
@@ -61,9 +63,16 @@ namespace ComputeShaderSF
 
         public int Size => _size;
 
-        public void AddParticles(float[] xx, float[] yy, float[] zz, int count)
+        public void AddParticles(float[] xx, float[] yy, float[] zz, int count,
+            bool ring = false)
         {
-            if (_size + count > _maxCnt) return;
+            if (count == 0) return;
+
+            if (_writeHead + count > _maxCnt)
+            {
+                if (!ring) return;
+                _writeHead = 0;
+            }
 
             EnsureStagingCapacity(count);
             _stagingX.SetData(xx, 0, 0, count);
@@ -71,7 +80,7 @@ namespace ComputeShaderSF
             _stagingZ.SetData(zz, 0, 0, count);
 
             _shader.SetInt("_ParticleCount", count);
-            _shader.SetInt("_ParticleOffset", _size);
+            _shader.SetInt("_ParticleOffset", _writeHead);
 
             _shader.SetBuffer(_addKernel, "_PosX", _x);
             _shader.SetBuffer(_addKernel, "_PosY", _y);
@@ -81,7 +90,9 @@ namespace ComputeShaderSF
             _shader.SetBuffer(_addKernel, "_NewZ", _stagingZ);
             _shader.Dispatch(_addKernel, (count + 255) / 256, 1, 1);
 
-            _size += count;
+            _writeHead += count;
+            if (_size < _writeHead)
+                _size = Mathf.Min(_writeHead, _maxCnt);
         }
 
         private void EnsureStagingCapacity(int needed)
@@ -162,6 +173,19 @@ namespace ComputeShaderSF
             _shader.SetFloat("_TorDZ", _torDZ);
         }
 
+        public void WrapPositions(float volSizeX, float volSizeY, float volSizeZ)
+        {
+            if (_size == 0) return;
+            _shader.SetInt("_ParticleCount", _size);
+            _shader.SetFloat("_VolSizeX", volSizeX);
+            _shader.SetFloat("_VolSizeY", volSizeY);
+            _shader.SetFloat("_VolSizeZ", volSizeZ);
+            _shader.SetBuffer(_wrapKernel, "_PosX", _x);
+            _shader.SetBuffer(_wrapKernel, "_PosY", _y);
+            _shader.SetBuffer(_wrapKernel, "_PosZ", _z);
+            _shader.Dispatch(_wrapKernel, (_size + 255) / 256, 1, 1);
+        }
+
         public void ReadPositions(float[] outX, float[] outY, float[] outZ)
         {
             if (_size == 0) return;
@@ -202,6 +226,7 @@ namespace ComputeShaderSF
                 _y.SetData(py, 0, 0, alive);
                 _z.SetData(pz, 0, 0, alive);
                 _size = alive;
+                _writeHead = alive;
             }
 
             return alive;

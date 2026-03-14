@@ -1,6 +1,7 @@
 #pragma kernel AddParticles
 #pragma kernel InterpolateVelocity
 #pragma kernel RK4Update
+#pragma kernel WrapPositions
 
 RWStructuredBuffer<float> _PosX;
 RWStructuredBuffer<float> _PosY;
@@ -113,4 +114,27 @@ void RK4Update(uint3 id : SV_DispatchThreadID)
     _PosX[i] += (_K1X[i] + 2.0 * _K2X[i] + 2.0 * _K3X[i] + _K4X[i]) * _DT / 6.0;
     _PosY[i] += (_K1Y[i] + 2.0 * _K2Y[i] + 2.0 * _K3Y[i] + _K4Y[i]) * _DT / 6.0;
     _PosZ[i] += (_K1Z[i] + 2.0 * _K2Z[i] + 2.0 * _K3Z[i] + _K4Z[i]) * _DT / 6.0;
+}
+
+float _VolSizeX;
+float _VolSizeY;
+float _VolSizeZ;
+
+[numthreads(256, 1, 1)]
+void WrapPositions(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+
+    float x = fmod(_PosX[i], _VolSizeX);
+    if (x < 0.0) x += _VolSizeX;
+    _PosX[i] = x;
+
+    float y = fmod(_PosY[i], _VolSizeY);
+    if (y < 0.0) y += _VolSizeY;
+    _PosY[i] = y;
+
+    float z = fmod(_PosZ[i], _VolSizeZ);
+    if (z < 0.0) z += _VolSizeZ;
+    _PosZ[i] = z;
 }
