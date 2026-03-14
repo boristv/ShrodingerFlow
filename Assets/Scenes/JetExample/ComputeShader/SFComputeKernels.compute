@@ -1,0 +1,221 @@
+#pragma kernel Normalize
+#pragma kernel Gauge
+#pragma kernel Shift
+#pragma kernel MulEach
+#pragma kernel CopyRealToComplex
+#pragma kernel FFTNorm
+#pragma kernel VelocityOne
+#pragma kernel StaggeredSharp
+#pragma kernel Div
+#pragma kernel ApplyJetBoundary
+
+RWStructuredBuffer<float2> _Psi1;
+RWStructuredBuffer<float2> _Psi2;
+RWStructuredBuffer<float2> _BufComplex;
+RWStructuredBuffer<float2> _BufComplex2;
+RWStructuredBuffer<float>  _BufFloat;
+RWStructuredBuffer<float>  _VX;
+RWStructuredBuffer<float>  _VY;
+RWStructuredBuffer<float>  _VZ;
+StructuredBuffer<int>      _IsJet;
+StructuredBuffer<float>    _PX;
+StructuredBuffer<float>    _PY;
+StructuredBuffer<float>    _PZ;
+
+int   _ResX;
+int   _ResY;
+int   _ResZ;
+int   _Num;
+float _DX;
+float _DY;
+float _DZ;
+float _Hbar;
+float _Param;
+float _KVecX;
+float _KVecY;
+float _KVecZ;
+float _PhaseOffset;
+
+float2 cmul(float2 a, float2 b)
+{
+    return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+[numthreads(256, 1, 1)]
+void Normalize(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    float sqAbs1 = _Psi1[i].x * _Psi1[i].x + _Psi1[i].y * _Psi1[i].y;
+    float sqAbs2 = _Psi2[i].x * _Psi2[i].x + _Psi2[i].y * _Psi2[i].y;
+    float norm = sqrt(sqAbs1 + sqAbs2);
+
+    _Psi1[i] /= norm;
+    _Psi2[i] /= norm;
+}
+
+[numthreads(256, 1, 1)]
+void Gauge(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    float2 q = _BufComplex[i];
+    float2 eiq = float2(cos(-q.x / (float)_Num), sin(-q.x / (float)_Num));
+
+    _Psi1[i] = cmul(_Psi1[i], eiq);
+    _Psi2[i] = cmul(_Psi2[i], eiq);
+}
+
+[numthreads(256, 1, 1)]
+void Shift(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    int resyz = _ResY * _ResZ;
+    int ix = (i / _ResZ) / _ResY;
+    int iy = (i / _ResZ) % _ResY;
+    int iz = i % _ResZ;
+
+    int idx = _ResX / 2;
+    int idy = _ResY / 2;
+    int idz = _ResZ / 2;
+
+    if (ix >= idx) return;
+
+    int offset;
+    if (iy < idy)
+    {
+        if (iz < idz)
+            offset = idz + idy * _ResZ + idx * resyz;
+        else
+            offset = -idz + idy * _ResZ + idx * resyz;
+    }
+    else
+    {
+        if (iz < idz)
+            offset = idz - idy * _ResZ + idx * resyz;
+        else
+            offset = -idz - idy * _ResZ + idx * resyz;
+    }
+
+    float2 tmp = _BufComplex[i];
+    _BufComplex[i] = _BufComplex[i + offset];
+    _BufComplex[i + offset] = tmp;
+}
+
+[numthreads(256, 1, 1)]
+void MulEach(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    _BufComplex[i] = cmul(_BufComplex[i], _BufComplex2[i]);
+}
+
+[numthreads(256, 1, 1)]
+void CopyRealToComplex(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    _BufComplex[i] = float2(_BufFloat[i], 0);
+}
+
+[numthreads(256, 1, 1)]
+void FFTNorm(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    _BufComplex[i] /= (float)_Num;
+}
+
+[numthreads(256, 1, 1)]
+void VelocityOne(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    float2 c1 = float2(_Psi1[i].x, -_Psi1[i].y);
+    float2 c2 = float2(_Psi2[i].x, -_Psi2[i].y);
+
+    // Z velocity: next neighbor in z with wrapping
+    int zNext = (i / _ResZ) * _ResZ + (i + 1) % _ResZ;
+    float2 mul1 = _Psi1[zNext];
+    float2 mul2 = _Psi2[zNext];
+    float2 s = float2(c1.x * mul1.x - c1.y * mul1.y + c2.x * mul2.x - c2.y * mul2.y,
+                      c1.x * mul1.y + c1.y * mul1.x + c2.x * mul2.y + c2.y * mul2.x);
+    float r = atan2(s.y, s.x);
+    if (abs(s.y) < 0.00001) r *= -1;
+    _VZ[i] = r * _Hbar;
+
+    // Y velocity: next neighbor in y with wrapping
+    int yNext = i - ((i / _ResZ) % _ResY) * _ResZ
+              + ((((i + _ResZ) / _ResZ) % _ResY) * _ResZ);
+    mul1 = _Psi1[yNext];
+    mul2 = _Psi2[yNext];
+    s = float2(c1.x * mul1.x - c1.y * mul1.y + c2.x * mul2.x - c2.y * mul2.y,
+               c1.x * mul1.y + c1.y * mul1.x + c2.x * mul2.y + c2.y * mul2.x);
+    r = atan2(s.y, s.x);
+    if (abs(s.y) < 0.00001) r *= -1;
+    _VY[i] = r * _Hbar;
+
+    // X velocity: next neighbor in x with wrapping
+    int xNext = (i + _ResZ * _ResY) % _Num;
+    mul1 = _Psi1[xNext];
+    mul2 = _Psi2[xNext];
+    s = float2(c1.x * mul1.x - c1.y * mul1.y + c2.x * mul2.x - c2.y * mul2.y,
+               c1.x * mul1.y + c1.y * mul1.x + c2.x * mul2.y + c2.y * mul2.x);
+    r = atan2(s.y, s.x);
+    if (abs(s.y) < 0.00001) r *= -1;
+    _VX[i] = r * _Hbar;
+}
+
+[numthreads(256, 1, 1)]
+void StaggeredSharp(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    _BufFloat[i] /= _Param;
+}
+
+[numthreads(256, 1, 1)]
+void Div(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    int size = _Num;
+
+    float d = (_VX[i] - _VX[((i - _ResY * _ResZ) % size + size) % size]) / (_DX * _DX);
+
+    int yPrev = i - ((i / _ResZ) % _ResY) * _ResZ
+              + ((((i - _ResZ + size) % size) / _ResZ) % _ResY) * _ResZ;
+    d += (_VY[i] - _VY[yPrev]) / (_DY * _DY);
+
+    int zPrev = (i / _ResZ) * _ResZ + ((i - 1 + size) % size) % _ResZ;
+    d += (_VZ[i] - _VZ[zPrev]) / (_DZ * _DZ);
+
+    _BufFloat[i] = d;
+}
+
+[numthreads(256, 1, 1)]
+void ApplyJetBoundary(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+    if (_IsJet[i] == 0) return;
+
+    float phase = _KVecX * _PX[i] + _KVecY * _PY[i] + _KVecZ * _PZ[i] + _PhaseOffset;
+
+    float amp1 = length(_Psi1[i]);
+    float amp2 = length(_Psi2[i]);
+
+    float2 expPhase = float2(cos(phase), sin(phase));
+    _Psi1[i] = amp1 * expPhase;
+    _Psi2[i] = amp2 * expPhase;
+}

@@ -1,0 +1,111 @@
+#pragma kernel BoxFilter
+#pragma kernel ComputeStrain
+#pragma kernel AddTurbViscosity
+
+RWStructuredBuffer<float> _Dst;
+StructuredBuffer<float>   _Src;
+RWStructuredBuffer<float> _NuT;
+RWStructuredBuffer<float> _U;
+RWStructuredBuffer<float> _V;
+RWStructuredBuffer<float> _W;
+
+int   _NX;
+int   _NY;
+int   _NZ;
+float _DX;
+float _DY;
+float _DZ;
+float _Cs;
+float _Delta;
+float _DT;
+
+#define IDX(i,j,k) ((i) * _NY * _NZ + (j) * _NZ + (k))
+
+int safeIdx(int ii, int jj, int kk)
+{
+    ii = clamp(ii, 0, _NX - 1);
+    jj = clamp(jj, 0, _NY - 1);
+    kk = clamp(kk, 0, _NZ - 1);
+    return ii * _NY * _NZ + jj * _NZ + kk;
+}
+
+[numthreads(8, 8, 8)]
+void BoxFilter(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    int j = (int)id.y;
+    int k = (int)id.z;
+    if (i >= _NX || j >= _NY || k >= _NZ) return;
+
+    float sum = 0.0;
+    for (int dz = -1; dz <= 1; dz++)
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                int ii = min(max(i + dx, 0), _NX - 1);
+                int jj = min(max(j + dy, 0), _NY - 1);
+                int kk = min(max(k + dz, 0), _NZ - 1);
+                sum += _Src[IDX(ii, jj, kk)];
+            }
+
+    _Dst[IDX(i, j, k)] = sum / 27.0;
+}
+
+[numthreads(8, 8, 8)]
+void ComputeStrain(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    int j = (int)id.y;
+    int k = (int)id.z;
+    if (i >= _NX || j >= _NY || k >= _NZ) return;
+
+    float du_dx = (_U[safeIdx(i+1,j,k)] - _U[safeIdx(i-1,j,k)]) / (2.0 * _DX);
+    float du_dy = (_U[safeIdx(i,j+1,k)] - _U[safeIdx(i,j-1,k)]) / (2.0 * _DY);
+    float du_dz = (_U[safeIdx(i,j,k+1)] - _U[safeIdx(i,j,k-1)]) / (2.0 * _DZ);
+
+    float dv_dx = (_V[safeIdx(i+1,j,k)] - _V[safeIdx(i-1,j,k)]) / (2.0 * _DX);
+    float dv_dy = (_V[safeIdx(i,j+1,k)] - _V[safeIdx(i,j-1,k)]) / (2.0 * _DY);
+    float dv_dz = (_V[safeIdx(i,j,k+1)] - _V[safeIdx(i,j,k-1)]) / (2.0 * _DZ);
+
+    float dw_dx = (_W[safeIdx(i+1,j,k)] - _W[safeIdx(i-1,j,k)]) / (2.0 * _DX);
+    float dw_dy = (_W[safeIdx(i,j+1,k)] - _W[safeIdx(i,j-1,k)]) / (2.0 * _DY);
+    float dw_dz = (_W[safeIdx(i,j,k+1)] - _W[safeIdx(i,j,k-1)]) / (2.0 * _DZ);
+
+    float S11 = du_dx;
+    float S22 = dv_dy;
+    float S33 = dw_dz;
+    float S12 = 0.5 * (du_dy + dv_dx);
+    float S13 = 0.5 * (du_dz + dw_dx);
+    float S23 = 0.5 * (dv_dz + dw_dy);
+
+    float magS = sqrt(2.0 * (S11*S11 + S22*S22 + S33*S33) +
+                      4.0 * (S12*S12 + S13*S13 + S23*S23));
+
+    _NuT[IDX(i,j,k)] = (_Cs * _Delta) * (_Cs * _Delta) * magS;
+}
+
+[numthreads(8, 8, 8)]
+void AddTurbViscosity(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    int j = (int)id.y;
+    int k = (int)id.z;
+    if (i >= _NX || j >= _NY || k >= _NZ) return;
+
+    float nuE = _NuT[safeIdx(i+1, j, k)];
+    float nuW = _NuT[safeIdx(i-1, j, k)];
+    float nuN = _NuT[safeIdx(i, j+1, k)];
+    float nuS = _NuT[safeIdx(i, j-1, k)];
+    float nuT = _NuT[safeIdx(i, j, k+1)];
+    float nuB = _NuT[safeIdx(i, j, k-1)];
+    float nuC = _NuT[IDX(i, j, k)];
+
+    float lap = (nuE + nuW - 2.0 * nuC) / (_DX * _DX)
+              + (nuN + nuS - 2.0 * nuC) / (_DY * _DY)
+              + (nuT + nuB - 2.0 * nuC) / (_DZ * _DZ);
+
+    int id_flat = IDX(i, j, k);
+    _U[id_flat] += _DT * lap;
+    _V[id_flat] += _DT * lap;
+    _W[id_flat] += _DT * lap;
+}

@@ -1,0 +1,113 @@
+#pragma kernel AddParticles
+#pragma kernel InterpolateVelocity
+#pragma kernel RK4Update
+
+RWStructuredBuffer<float> _PosX;
+RWStructuredBuffer<float> _PosY;
+RWStructuredBuffer<float> _PosZ;
+
+StructuredBuffer<float>   _NewX;
+StructuredBuffer<float>   _NewY;
+StructuredBuffer<float>   _NewZ;
+
+StructuredBuffer<float>   _VelFieldX;
+StructuredBuffer<float>   _VelFieldY;
+StructuredBuffer<float>   _VelFieldZ;
+
+RWStructuredBuffer<float> _ShiftX;
+RWStructuredBuffer<float> _ShiftY;
+RWStructuredBuffer<float> _ShiftZ;
+
+RWStructuredBuffer<float> _OutX;
+RWStructuredBuffer<float> _OutY;
+RWStructuredBuffer<float> _OutZ;
+
+StructuredBuffer<float>   _K1X;
+StructuredBuffer<float>   _K1Y;
+StructuredBuffer<float>   _K1Z;
+StructuredBuffer<float>   _K2X;
+StructuredBuffer<float>   _K2Y;
+StructuredBuffer<float>   _K2Z;
+StructuredBuffer<float>   _K3X;
+StructuredBuffer<float>   _K3Y;
+StructuredBuffer<float>   _K3Z;
+StructuredBuffer<float>   _K4X;
+StructuredBuffer<float>   _K4Y;
+StructuredBuffer<float>   _K4Z;
+
+int   _ParticleCount;
+int   _ParticleOffset;
+float _DT;
+float _ShiftFactor;
+
+int   _TorResX;
+int   _TorResY;
+int   _TorResZ;
+float _TorDX;
+float _TorDY;
+float _TorDZ;
+
+[numthreads(256, 1, 1)]
+void AddParticles(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+
+    _PosX[i + _ParticleOffset] = _NewX[i];
+    _PosY[i + _ParticleOffset] = _NewY[i];
+    _PosZ[i + _ParticleOffset] = _NewZ[i];
+}
+
+[numthreads(256, 1, 1)]
+void InterpolateVelocity(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+
+    float sh_x = _ShiftX[i] * _ShiftFactor;
+    float tmp_x = _PosX[i] + sh_x;
+    int ix  = (int)floor(tmp_x / _TorDX);
+    int ixp = (ix + 1) % _TorResX;
+    float wx = tmp_x - (float)ix * _TorDX;
+
+    float sh_y = _ShiftY[i] * _ShiftFactor;
+    float tmp_y = _PosY[i] + sh_y;
+    int iy  = (int)floor(tmp_y / _TorDY);
+    int iyp = (iy + 1) % _TorResY;
+    float wy = tmp_y - (float)iy * _TorDY;
+
+    float sh_z = _ShiftZ[i] * _ShiftFactor;
+    float tmp_z = _PosZ[i] + sh_z;
+    int iz  = (int)floor(tmp_z / _TorDZ);
+    int izp = (iz + 1) % _TorResZ;
+    float wz = tmp_z - (float)iz * _TorDZ;
+
+    int r2 = _TorResZ;
+    int r21 = _TorResZ * _TorResY;
+
+    _OutX[i] = (1.0 - wz) * ((1.0 - wy) * _VelFieldX[ix * r21 + iy * r2 + iz]
+                                     + wy * _VelFieldX[ix * r21 + iyp * r2 + iz])
+                    + wz  * ((1.0 - wy) * _VelFieldX[ix * r21 + iy * r2 + izp]
+                                     + wy * _VelFieldX[ix * r21 + iyp * r2 + izp]);
+
+    _OutY[i] = (1.0 - wz) * ((1.0 - wx) * _VelFieldY[ix * r21 + iy * r2 + iz]
+                                     + wx * _VelFieldY[ixp * r21 + iy * r2 + iz])
+                    + wz  * ((1.0 - wx) * _VelFieldY[ix * r21 + iy * r2 + izp]
+                                     + wx * _VelFieldY[ixp * r21 + iy * r2 + izp]);
+
+    _OutZ[i] = (1.0 - wy) * ((1.0 - wx) * _VelFieldZ[ix * r21 + iy * r2 + iz]
+                                     + wx * _VelFieldZ[ixp * r21 + iy * r2 + iz])
+                    + wy  * ((1.0 - wx) * _VelFieldZ[ix * r21 + iyp * r2 + iz]
+                                     + wx * _VelFieldZ[ixp * r21 + iyp * r2 + iz]);
+}
+
+[numthreads(256, 1, 1)]
+void RK4Update(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+
+    _PosX[i] += (_K1X[i] + 2.0 * _K2X[i] + 2.0 * _K3X[i] + _K4X[i]) * _DT / 6.0;
+    _PosY[i] += (_K1Y[i] + 2.0 * _K2Y[i] + 2.0 * _K3Y[i] + _K4Y[i]) * _DT / 6.0;
+    _PosZ[i] += (_K1Z[i] + 2.0 * _K2Z[i] + 2.0 * _K3Z[i] + _K4Z[i]) * _DT / 6.0;
+}

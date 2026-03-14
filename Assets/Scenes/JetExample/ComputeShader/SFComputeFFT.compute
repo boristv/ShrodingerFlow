@@ -1,0 +1,90 @@
+#pragma kernel BitReverse
+#pragma kernel Butterfly
+
+RWStructuredBuffer<float2> _Data;
+
+int   _FFTLength;
+int   _FFTStride;
+int   _FFTCount;
+int   _FFTInnerSize;
+int   _FFTOuterSize;
+int   _FFTLog2N;
+int   _FFTStage;
+float _FFTDirection; // -1.0 forward, +1.0 inverse
+
+#define PI 3.14159265358979323846
+
+uint bitReverseN(uint x, uint bits)
+{
+    uint result = 0;
+    for (uint b = 0; b < bits; b++)
+    {
+        result = (result << 1u) | (x & 1u);
+        x >>= 1u;
+    }
+    return result;
+}
+
+int computeBase(int fftId)
+{
+    return (fftId / _FFTInnerSize) * _FFTOuterSize + (fftId % _FFTInnerSize);
+}
+
+[numthreads(256, 1, 1)]
+void BitReverse(uint3 id : SV_DispatchThreadID)
+{
+    uint tid = id.x;
+    uint total = (uint)_FFTLength * (uint)_FFTCount;
+    if (tid >= total) return;
+
+    uint fftId  = tid / (uint)_FFTLength;
+    uint localId = tid % (uint)_FFTLength;
+
+    uint reversed = bitReverseN(localId, (uint)_FFTLog2N);
+
+    if (localId < reversed)
+    {
+        int base_idx = computeBase((int)fftId);
+        int idx1 = base_idx + (int)localId  * _FFTStride;
+        int idx2 = base_idx + (int)reversed * _FFTStride;
+
+        float2 tmp = _Data[idx1];
+        _Data[idx1] = _Data[idx2];
+        _Data[idx2] = tmp;
+    }
+}
+
+[numthreads(256, 1, 1)]
+void Butterfly(uint3 id : SV_DispatchThreadID)
+{
+    uint tid = id.x;
+    uint halfN = (uint)_FFTLength >> 1u;
+    uint total = halfN * (uint)_FFTCount;
+    if (tid >= total) return;
+
+    uint fftId      = tid / halfN;
+    uint butterflyId = tid % halfN;
+
+    uint halfLen = 1u << (uint)_FFTStage;
+    uint fullLen = halfLen << 1u;
+
+    uint grp = butterflyId / halfLen;
+    uint pos = butterflyId % halfLen;
+
+    uint loc1 = grp * fullLen + pos;
+    uint loc2 = loc1 + halfLen;
+
+    int base_idx = computeBase((int)fftId);
+    int gIdx1 = base_idx + (int)loc1 * _FFTStride;
+    int gIdx2 = base_idx + (int)loc2 * _FFTStride;
+
+    float angle = _FFTDirection * 2.0 * PI * (float)pos / (float)fullLen;
+    float2 tw = float2(cos(angle), sin(angle));
+
+    float2 u = _Data[gIdx1];
+    float2 t = float2(tw.x * _Data[gIdx2].x - tw.y * _Data[gIdx2].y,
+                      tw.x * _Data[gIdx2].y + tw.y * _Data[gIdx2].x);
+
+    _Data[gIdx1] = u + t;
+    _Data[gIdx2] = u - t;
+}
