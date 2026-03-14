@@ -283,13 +283,17 @@ namespace ComputeShaderSF
             _les.ApplySGS(_velCurrent, dx, dy, dz, dt);
         }
 
-        public void UpdateSpace()
+        public void UpdateSpace(bool useLES = true)
         {
             SetCommonUniforms();
             SchoedingerFlow();
-            LESStep();
+            if (useLES)
+                LESStep();
             Normalize();
-            PressureProject(_velCurrent);
+            if (useLES)
+                PressureProject(_velCurrent);
+            else
+                PressureProject();
         }
 
         public void UpdateVelocities(CSVelocity vel)

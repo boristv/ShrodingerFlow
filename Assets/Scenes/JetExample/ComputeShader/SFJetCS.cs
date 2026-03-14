@@ -23,7 +23,11 @@ public class SFJetCS : SFBase
 
     [Header("Дополнительные настройки")]
     [SerializeField] private float _particleSize = 0.05f;
-    [SerializeField] private int _stepsPerFrame = 5;
+    [SerializeField] private bool _useLES = true;
+
+    [Header("Скорость симуляции")]
+    [SerializeField] private bool _paused;
+    [SerializeField, Range(1, 20)] private int _stepsPerFrame = 5;
 
     private CSISF _isf;
     private CSParticles _particles;
@@ -33,6 +37,7 @@ public class SFJetCS : SFBase
     private ParticleSystem _particleSystem;
     private ParticleSystem.Particle[] _cloud;
     private float[] _pxArr, _pyArr, _pzArr;
+    private Vector3[] _prevPos;
     private int _particlesCount;
 
     private float _kvecX, _kvecY, _kvecZ;
@@ -58,6 +63,7 @@ public class SFJetCS : SFBase
         _pxArr = new float[maxCloud];
         _pyArr = new float[maxCloud];
         _pzArr = new float[maxCloud];
+        _prevPos = new Vector3[maxCloud];
 
         InitPsi();
         BuildIsJetMask();
@@ -117,7 +123,7 @@ public class SFJetCS : SFBase
 
     private void Update()
     {
-        if (!_initialized) return;
+        if (!_initialized || _paused) return;
 
         for (int step = 0; step < _stepsPerFrame; step++)
         {
@@ -130,7 +136,7 @@ public class SFJetCS : SFBase
 
     private void SimulationStep()
     {
-        _isf.UpdateSpace();
+        _isf.UpdateSpace(_useLES);
 
         float phaseOffset = -_omega * dt * iterator;
         _isf.ApplyJetBoundary(_isJetBuf, _kvecX, _kvecY, _kvecZ, phaseOffset);
@@ -165,18 +171,27 @@ public class SFJetCS : SFBase
         _particles.ReadPositions(_pxArr, _pyArr, _pzArr);
 
         var offset = transform.position;
+        float maxX = vol_size[0], maxY = vol_size[1], maxZ = vol_size[2];
+        int visible = 0;
         for (int i = 0; i < _particlesCount; i++)
         {
-            var pos = new Vector3(_pxArr[i], _pyArr[i], _pzArr[i]) + offset;
-            var lastPos = _cloud[i].position;
-            _cloud[i].position = pos;
-            _cloud[i].velocity = pos - lastPos;
-            var cc = _cloud[i].velocity.normalized;
-            _cloud[i].startColor = new Color(cc.x, cc.y, cc.z, 1f);
-            _cloud[i].startSize = _particleSize;
+            float px = _pxArr[i], py = _pyArr[i], pz = _pzArr[i];
+            if (px < 0f || px > maxX || py < 0f || py > maxY || pz < 0f || pz > maxZ)
+                continue;
+
+            var pos = new Vector3(px, py, pz) + offset;
+            var vel = pos - _prevPos[i];
+            _prevPos[i] = pos;
+
+            var cc = vel.normalized;
+            _cloud[visible].position = pos;
+            _cloud[visible].velocity = vel;
+            _cloud[visible].startColor = new Color(cc.x, cc.y, cc.z, 1f);
+            _cloud[visible].startSize = _particleSize;
+            visible++;
         }
 
-        _particleSystem.SetParticles(_cloud, _particlesCount);
+        _particleSystem.SetParticles(_cloud, visible);
     }
 
     private void OnDestroy()
