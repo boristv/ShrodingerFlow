@@ -1,3 +1,4 @@
+using ShrodingerFlow.Particles;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -7,7 +8,7 @@ public static class JetCSSceneSetup
 {
     private const string ScenePath = "Assets/Scenes/JetExample/ComputeShader/JetExampleCS.unity";
     private const string ShaderDir = "Assets/Scenes/JetExample/ComputeShader/";
-    private const string MatPath   = "Assets/Scenes/JetExample/jet_particle.mat";
+    private const string ParticlesShaderDir = "Assets/Particles/";
 
     [MenuItem("ShrodingerFlow/Create JetExample CS Scene")]
     public static void CreateScene()
@@ -16,7 +17,7 @@ public static class JetCSSceneSetup
 
         SetupCamera();
         var jetGo = CreateJetObject();
-        ConfigureParticleSystem(jetGo);
+        ConfigureGpuParticles(jetGo);
         AttachJetCS(jetGo);
 
         EditorSceneManager.SaveScene(scene, ScenePath);
@@ -41,36 +42,23 @@ public static class JetCSSceneSetup
         return go;
     }
 
-    private static void ConfigureParticleSystem(GameObject go)
+    private static void ConfigureGpuParticles(GameObject go)
     {
-        var ps = go.AddComponent<ParticleSystem>();
+        go.AddComponent<ParticleGpuBuffers>();
 
-        var main = ps.main;
-        main.maxParticles = 1000;
-        main.startLifetime = 9999f;
-        main.startSpeed = 0f;
-        main.startSize = 0.05f;
-        main.simulationSpace = ParticleSystemSimulationSpace.World;
-        main.playOnAwake = false;
-        main.loop = true;
+        var display = go.AddComponent<ParticleDisplay3D>();
+        display.mode = ParticleDisplay3D.DisplayMode.Billboard;
+        display.scale = 0.05f * 50f;
 
-        var emission = ps.emission;
-        emission.enabled = false;
+        var bb = AssetDatabase.LoadAssetAtPath<Shader>($"{ParticlesShaderDir}ParticleBillboard.shader");
+        var surf = AssetDatabase.LoadAssetAtPath<Shader>($"{ParticlesShaderDir}Particle3DSurf.shader");
+        display.shaderBillboard = bb;
+        display.shaderShaded = surf;
 
-        var shape = ps.shape;
-        shape.enabled = false;
-
-        var velocityOverLifetime = ps.velocityOverLifetime;
-        velocityOverLifetime.enabled = false;
-
-        var renderer = go.GetComponent<ParticleSystemRenderer>();
-        renderer.renderMode = ParticleSystemRenderMode.Billboard;
-
-        var mat = AssetDatabase.LoadAssetAtPath<Material>(MatPath);
-        if (mat != null)
-            renderer.material = mat;
-        else
-            Debug.LogWarning($"[JetCSSceneSetup] Material not found: {MatPath}");
+        if (bb == null)
+            Debug.LogWarning($"[JetCSSceneSetup] Shader not found: {ParticlesShaderDir}ParticleBillboard.shader");
+        if (surf == null)
+            Debug.LogWarning($"[JetCSSceneSetup] Shader not found: {ParticlesShaderDir}Particle3DSurf.shader");
     }
 
     private static void AttachJetCS(GameObject go)

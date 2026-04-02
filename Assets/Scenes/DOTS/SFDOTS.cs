@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using System.Runtime.InteropServices;
 using ManagedCuda.VectorTypes;
 using UnityEngine;
@@ -161,11 +161,10 @@ public struct InitialData : IComponentData
     public int Index;
 }
 
-[BurstCompile]
+// Без BurstCompile: OnUpdate читает SFDOTS.NativePositions (статика) — BC1040 в Burst.
 [DisableAutoCreation]
 public partial struct SpawnerSystem : ISystem
 {
-    //private NativeArray<float3> _nativePositions;
     private int count;
     
     public void OnCreate(ref SystemState state)
@@ -175,8 +174,6 @@ public partial struct SpawnerSystem : ISystem
         var buffer = SystemAPI.GetSingleton<BeginSimulationEntityCommandBufferSystem.Singleton>().CreateCommandBuffer(state.WorldUnmanaged);
         
         count = SFDOTS.Instance.n_particles;
-        
-        //_nativePositions = new NativeArray<float3>(count, Allocator.Persistent);
 
         for (int i = 0; i < count; i++)
         {
@@ -187,11 +184,9 @@ public partial struct SpawnerSystem : ISystem
         }
     }
 
-    [BurstCompile]
     public void OnUpdate(ref SystemState state)
     {
-        //_nativePositions = SFDOTS.NativePositions;
-        new SpawnerJob {Positions = SFDOTS.NativePositions}.ScheduleParallel(state.Dependency).Complete();
+        new SpawnerJob { Positions = SFDOTS.NativePositions }.ScheduleParallel(state.Dependency).Complete();
     }
 }
 

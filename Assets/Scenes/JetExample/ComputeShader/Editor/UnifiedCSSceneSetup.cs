@@ -1,3 +1,4 @@
+using ShrodingerFlow.Particles;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -5,7 +6,7 @@ using UnityEngine;
 public static class UnifiedCSSceneSetup
 {
     private const string ShaderDir = "Assets/Scenes/JetExample/ComputeShader/";
-    private const string MatPath   = "Assets/Scenes/JetExample/jet_particle.mat";
+    private const string ParticlesShaderDir = "Assets/Particles/";
     private const string ScenePath = "Assets/Scenes/JetExample/ComputeShader/UnifiedCS.unity";
 
     [MenuItem("ShrodingerFlow/Create Unified CS Scene")]
@@ -18,7 +19,7 @@ public static class UnifiedCSSceneSetup
         var go = new GameObject("ISF_Simulation");
         go.transform.position = new Vector3(0f, 5.45f, 0f);
 
-        ConfigureParticleSystem(go);
+        ConfigureGpuParticles(go);
         AttachUnifiedCS(go);
 
         EditorSceneManager.SaveScene(scene, ScenePath);
@@ -37,34 +38,23 @@ public static class UnifiedCSSceneSetup
         cam.fieldOfView = 60f;
     }
 
-    private static void ConfigureParticleSystem(GameObject go)
+    private static void ConfigureGpuParticles(GameObject go)
     {
-        var ps = go.AddComponent<ParticleSystem>();
+        go.AddComponent<ParticleGpuBuffers>();
 
-        var main = ps.main;
-        main.maxParticles = 100000;
-        main.startLifetime = 9999f;
-        main.startSpeed = 0f;
-        main.startSize = 0.05f;
-        main.simulationSpace = ParticleSystemSimulationSpace.World;
-        main.playOnAwake = false;
-        main.loop = true;
+        var display = go.AddComponent<ParticleDisplay3D>();
+        display.mode = ParticleDisplay3D.DisplayMode.Billboard;
+        display.scale = 0.05f * 50f;
 
-        var emission = ps.emission;
-        emission.enabled = false;
+        var bb = AssetDatabase.LoadAssetAtPath<Shader>($"{ParticlesShaderDir}ParticleBillboard.shader");
+        var surf = AssetDatabase.LoadAssetAtPath<Shader>($"{ParticlesShaderDir}Particle3DSurf.shader");
+        display.shaderBillboard = bb;
+        display.shaderShaded = surf;
 
-        var shape = ps.shape;
-        shape.enabled = false;
-
-        var velocityOverLifetime = ps.velocityOverLifetime;
-        velocityOverLifetime.enabled = false;
-
-        var renderer = go.GetComponent<ParticleSystemRenderer>();
-        renderer.renderMode = ParticleSystemRenderMode.Billboard;
-
-        var mat = AssetDatabase.LoadAssetAtPath<Material>(MatPath);
-        if (mat != null)
-            renderer.material = mat;
+        if (bb == null)
+            Debug.LogWarning($"[UnifiedCSSceneSetup] Shader not found: {ParticlesShaderDir}ParticleBillboard.shader");
+        if (surf == null)
+            Debug.LogWarning($"[UnifiedCSSceneSetup] Shader not found: {ParticlesShaderDir}Particle3DSurf.shader");
     }
 
     private static void AttachUnifiedCS(GameObject go)

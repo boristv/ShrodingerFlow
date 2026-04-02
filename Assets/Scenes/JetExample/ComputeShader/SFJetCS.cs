@@ -1,5 +1,6 @@
 using UnityEngine;
 using ComputeShaderSF;
+using ShrodingerFlow.Particles;
 
 public class SFJetCS : SFBase
 {
@@ -34,8 +35,10 @@ public class SFJetCS : SFBase
     private CSVelocity _vel;
     private ComputeBuffer _isJetBuf;
 
-    private ParticleSystem _particleSystem;
-    private ParticleSystem.Particle[] _cloud;
+    private ParticleGpuBuffers _particleBuffers;
+    private ParticleDisplay3D _particleDisplay;
+    private Vector3[] _renderPos;
+    private Vector3[] _renderVel;
     private float[] _pxArr, _pyArr, _pzArr;
     private Vector3[] _prevPos;
     private int _particlesCount;
@@ -49,7 +52,8 @@ public class SFJetCS : SFBase
     private void Start()
     {
         _volSizeV3 = new Vector3(vol_size[0], vol_size[1], vol_size[2]);
-        _particleSystem = GetComponent<ParticleSystem>();
+        _particleBuffers = GetComponent<ParticleGpuBuffers>();
+        _particleDisplay = GetComponent<ParticleDisplay3D>();
 
         _isf = new CSISF();
         _isf.Init(_kernelsShader, _fftShader, _lesShader, vol_size, vol_res, hbar, dt);
@@ -60,7 +64,9 @@ public class SFJetCS : SFBase
         _vel = new CSVelocity(_isf.resX, _isf.resY, _isf.resZ);
 
         int maxCloud = n_particles * 1000;
-        _cloud = new ParticleSystem.Particle[maxCloud];
+        _particleBuffers?.EnsureCapacity(maxCloud);
+        _renderPos = new Vector3[maxCloud];
+        _renderVel = new Vector3[maxCloud];
         _pxArr = new float[maxCloud];
         _pyArr = new float[maxCloud];
         _pzArr = new float[maxCloud];
@@ -176,7 +182,7 @@ public class SFJetCS : SFBase
 
     private void UpdateParticleSystem()
     {
-        if (_particlesCount == 0) return;
+        if (_particlesCount == 0 || _particleBuffers == null) return;
 
         _particles.ReadPositions(_pxArr, _pyArr, _pzArr);
 
@@ -193,15 +199,15 @@ public class SFJetCS : SFBase
             var vel = pos - _prevPos[i];
             _prevPos[i] = pos;
 
-            var cc = vel.normalized;
-            _cloud[visible].position = pos;
-            _cloud[visible].velocity = vel;
-            _cloud[visible].startColor = new Color(cc.x, cc.y, cc.z, 1f);
-            _cloud[visible].startSize = _particleSize;
+            _renderPos[visible] = pos;
+            _renderVel[visible] = vel;
             visible++;
         }
 
-        _particleSystem.SetParticles(_cloud, visible);
+        _particleBuffers.Upload(_renderPos, _renderVel, visible);
+
+        if (_particleDisplay != null)
+            _particleDisplay.scale = _particleSize * 50f;
     }
 
     private void OnDestroy()
