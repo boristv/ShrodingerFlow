@@ -1,6 +1,12 @@
 using UnityEngine;
 using ComputeShaderSF;
 using ShrodingerFlow.Particles;
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
+
+// «Apply Scenario Defaults» берёт числа из SFUnifiedScenarioPresets (ассет или встроенная копия),
+// а не из switch в этом файле. Референс: JetExampleCS.unity, UnifiedCS.unity — см. SFUnifiedScenarioPresets.cs.
 
 public class SFUnifiedCS : SFBase
 {
@@ -19,17 +25,21 @@ public class SFUnifiedCS : SFBase
     [SerializeField] private ComputeShader _particlesShader;
     [SerializeField] private ComputeShader _lesShader;
 
+    [Header("Пресеты (контекстное меню Apply Scenario Defaults)")]
+    [Tooltip("Если задано — используются эти значения. Иначе в Editor подставляется SFUnifiedScenarioPresets.asset, в рантайме/без ассета — встроенная копия (CreateBuiltIn).")]
+    [SerializeField] private SFUnifiedScenarioPresets _scenarioPresetsOverride;
+
     [Header("Тип сценария")]
-    [SerializeField] private ScenarioType _scenario = ScenarioType.Jet;
+    [SerializeField] private ScenarioType _scenario = ScenarioType.TwoSpheres;
 
     [Header("Базовые параметры ISF")]
     [SerializeField] private int[] vol_size = { 4, 2, 2 };
     [SerializeField] private int[] vol_res = { 64, 32, 32 };
     [SerializeField] private float hbar = 0.1f;
-    [SerializeField] private float dt = 1f / 48f;
+    [SerializeField] private float dt = 1f / 12f;
 
     [Header("Скорость потока / фона")]
-    [SerializeField] private Vector3 _velocity = new Vector3(1f, 0f, 0f);
+    [SerializeField] private Vector3 _velocity = new Vector3(-0.2f, 0f, 0f);
 
     [Header("Jet / Nozzle (Jet, SphereObstacle, CylinderObstacle)")]
     [SerializeField] private Vector3 _nozzleCen = new Vector3(0.3f, 0.966f, 1.066f);
@@ -52,17 +62,17 @@ public class SFUnifiedCS : SFBase
 
     [Header("Частицы")]
     [SerializeField] private int _nParticles = 50;
-    [SerializeField] private float _particleSize = 0.05f;
+    [SerializeField] private float _particleSize = 0.1f;
 
     [Header("Начальное расположение частиц (Box-спавн)")]
-    [SerializeField] private Vector2 _boxSpawnX = new Vector2(5, 5);
-    [SerializeField] private Vector2 _boxSpawnY = new Vector2(0.5f, 4.5f);
-    [SerializeField] private Vector2 _boxSpawnZ = new Vector2(0.5f, 4.5f);
+    [SerializeField] private Vector2 _boxSpawnX = new Vector2(0.3f, 0.3f);
+    [SerializeField] private Vector2 _boxSpawnY = new Vector2(0.5f, 1.5f);
+    [SerializeField] private Vector2 _boxSpawnZ = new Vector2(0.5f, 1.5f);
 
     [Header("Управление")]
-    [SerializeField] private bool _useLES = true;
+    [SerializeField] private bool _useLES = false;
     [SerializeField] private bool _paused;
-    [SerializeField, Range(1, 20)] private int _stepsPerFrame = 5;
+    [SerializeField, Range(1, 20)] private int _stepsPerFrame = 3;
 
     private CSISF _isf;
     private CSParticles _particles;
@@ -83,6 +93,9 @@ public class SFUnifiedCS : SFBase
     private int _compactCounter;
     private bool _spawnEachStep;
     private bool _boundaryEachStep;
+
+    /// <summary>Текущий выбранный сценарий (для применения пресетов из SFUnifiedScenarioPresets).</summary>
+    public ScenarioType CurrentScenario => _scenario;
 
     #region Lifecycle
 
@@ -427,6 +440,9 @@ public class SFUnifiedCS : SFBase
 
         _isf.UpdateVelocities(_vel);
         _particles.CalculateMovement(_vel);
+
+        if (_scenario != ScenarioType.Jet)
+            _particles.WrapPositions(vol_size[0], vol_size[1], vol_size[2]);
     }
 
     #endregion
@@ -563,98 +579,121 @@ public class SFUnifiedCS : SFBase
 
     #region Presets
 
+    private SFUnifiedScenarioPresets ResolveScenarioPresets()
+    {
+        if (_scenarioPresetsOverride != null)
+            return _scenarioPresetsOverride;
+#if UNITY_EDITOR
+        var fromProject = AssetDatabase.LoadAssetAtPath<SFUnifiedScenarioPresets>(
+            SFUnifiedScenarioPresets.DefaultAssetPath);
+        if (fromProject != null)
+            return fromProject;
+#endif
+        return SFUnifiedScenarioPresets.CreateBuiltIn();
+    }
+
     [ContextMenu("Apply Scenario Defaults")]
     private void ApplyScenarioDefaults()
     {
-        switch (_scenario)
-        {
-            case ScenarioType.Jet:
-                vol_size = new[] { 4, 2, 2 };
-                vol_res = new[] { 64, 32, 32 };
-                hbar = 0.1f;
-                dt = 1f / 48f;
-                _velocity = new Vector3(1f, 0f, 0f);
-                _nozzleCen = new Vector3(0.3f, 0.966f, 1.066f);
-                _nozzleLen = 0.5f;
-                _nozzleRad = 0.5f;
-                _nParticles = 50;
-                _particleSize = 0.05f;
-                _stepsPerFrame = 5;
-                _useLES = true;
-                break;
+        var src = ResolveScenarioPresets();
+        src.ApplyTo(this);
+        Debug.Log($"[SFUnifiedCS] Applied scenario defaults for {_scenario} (presets: {(src == _scenarioPresetsOverride ? "override field" : "asset / built-in")})");
+    }
 
-            case ScenarioType.SphereObstacle:
-                vol_size = new[] { 4, 2, 2 };
-                vol_res = new[] { 64, 32, 32 };
-                hbar = 0.1f;
-                dt = 1f / 12f;
-                _velocity = new Vector3(-0.2f, 0f, 0f);
-                _obstaclePos1 = new Vector3(1.5f, 1f, 1f);
-                _obstacleRadius1 = 0.5f;
-                _nozzleCen = new Vector3(0.3f, 0.966f, 1.066f);
-                _nozzleLen = 0.5f;
-                _nozzleRad = 0.5f;
-                _nParticles = 50;
-                _particleSize = 0.1f;
-                _stepsPerFrame = 3;
-                _useLES = false;
-                break;
+    public void ApplyJetPreset(SFUnifiedJetPreset p)
+    {
+        vol_size = (int[])p.vol_size?.Clone() ?? new[] { 4, 2, 2 };
+        vol_res = (int[])p.vol_res?.Clone() ?? new[] { 64, 32, 32 };
+        hbar = p.hbar;
+        dt = p.dt;
+        _velocity = p.velocity;
+        _nozzleCen = p.nozzleCen;
+        _nozzleLen = p.nozzleLen;
+        _nozzleRad = p.nozzleRad;
+        _nParticles = p.nParticles;
+        _particleSize = p.particleSize;
+        _stepsPerFrame = p.stepsPerFrame;
+        _useLES = p.useLES;
+    }
 
-            case ScenarioType.CylinderObstacle:
-                vol_size = new[] { 4, 2, 2 };
-                vol_res = new[] { 64, 32, 32 };
-                hbar = 0.1f;
-                dt = 1f / 12f;
-                _velocity = new Vector3(-0.2f, 0f, 0f);
-                _obstaclePos1 = new Vector3(1.5f, 1f, 1f);
-                _obstacleRadius1 = 0.5f;
-                _nozzleCen = new Vector3(0.3f, 1f, 1f);
-                _boxSpawnX = new Vector2(0.3f, 0.3f);
-                _boxSpawnY = new Vector2(0.5f, 1.5f);
-                _boxSpawnZ = new Vector2(0.5f, 1.5f);
-                _nParticles = 50;
-                _particleSize = 0.1f;
-                _stepsPerFrame = 3;
-                _useLES = false;
-                break;
+    public void ApplySphereObstaclePreset(SFUnifiedSphereObstaclePreset p)
+    {
+        vol_size = (int[])p.vol_size?.Clone() ?? new[] { 4, 2, 2 };
+        vol_res = (int[])p.vol_res?.Clone() ?? new[] { 64, 32, 32 };
+        hbar = p.hbar;
+        dt = p.dt;
+        _velocity = p.velocity;
+        _obstaclePos1 = p.obstaclePos1;
+        _obstacleRadius1 = p.obstacleRadius1;
+        _nozzleCen = p.nozzleCen;
+        _nozzleLen = p.nozzleLen;
+        _nozzleRad = p.nozzleRad;
+        _boxSpawnX = p.boxSpawnX;
+        _boxSpawnY = p.boxSpawnY;
+        _boxSpawnZ = p.boxSpawnZ;
+        _nParticles = p.nParticles;
+        _particleSize = p.particleSize;
+        _stepsPerFrame = p.stepsPerFrame;
+        _useLES = p.useLES;
+    }
 
-            case ScenarioType.TwoSpheres:
-                vol_size = new[] { 4, 2, 2 };
-                vol_res = new[] { 64, 32, 32 };
-                hbar = 0.1f;
-                dt = 1f / 12f;
-                _velocity = new Vector3(-0.2f, 0f, 0f);
-                _obstaclePos1 = new Vector3(1.5f, 1f, 1f);
-                _obstacleRadius1 = 0.5f;
-                _obstaclePos2 = new Vector3(2.5f, 1f, 1f);
-                _obstacleRadius2 = 0.5f;
-                _nParticles = 50;
-                _particleSize = 0.1f;
-                _stepsPerFrame = 3;
-                _useLES = false;
-                break;
+    public void ApplyCylinderObstaclePreset(SFUnifiedCylinderObstaclePreset p)
+    {
+        vol_size = (int[])p.vol_size?.Clone() ?? new[] { 4, 2, 2 };
+        vol_res = (int[])p.vol_res?.Clone() ?? new[] { 64, 32, 32 };
+        hbar = p.hbar;
+        dt = p.dt;
+        _velocity = p.velocity;
+        _obstaclePos1 = p.obstaclePos1;
+        _obstacleRadius1 = p.obstacleRadius1;
+        _nozzleCen = p.nozzleCen;
+        _boxSpawnX = p.boxSpawnX;
+        _boxSpawnY = p.boxSpawnY;
+        _boxSpawnZ = p.boxSpawnZ;
+        _nParticles = p.nParticles;
+        _particleSize = p.particleSize;
+        _stepsPerFrame = p.stepsPerFrame;
+        _useLES = p.useLES;
+    }
 
-            case ScenarioType.LeapfrogRings:
-                vol_size = new[] { 10, 5, 5 };
-                vol_res = new[] { 128, 64, 64 };
-                hbar = 0.1f;
-                dt = 1f / 12f;
-                _velocity = new Vector3(-0.2f, 0f, 0f);
-                _ring1Radius = 1.5f;
-                _ring2Radius = 0.9f;
-                _ring1Normal = new Vector3(-1f, 0f, 0f);
-                _ring2Normal = new Vector3(-1f, 0f, 0f);
-                _boxSpawnX = new Vector2(3f, 7f);
-                _boxSpawnY = new Vector2(0.5f, 4.5f);
-                _boxSpawnZ = new Vector2(0.5f, 4.5f);
-                _nParticles = 100000;
-                _particleSize = 0.1f;
-                _stepsPerFrame = 3;
-                _useLES = false;
-                break;
-        }
+    public void ApplyTwoSpheresPreset(SFUnifiedTwoSpheresPreset p)
+    {
+        vol_size = (int[])p.vol_size?.Clone() ?? new[] { 4, 2, 2 };
+        vol_res = (int[])p.vol_res?.Clone() ?? new[] { 64, 32, 32 };
+        hbar = p.hbar;
+        dt = p.dt;
+        _velocity = p.velocity;
+        _obstaclePos1 = p.obstaclePos1;
+        _obstacleRadius1 = p.obstacleRadius1;
+        _obstaclePos2 = p.obstaclePos2;
+        _obstacleRadius2 = p.obstacleRadius2;
+        _boxSpawnX = p.boxSpawnX;
+        _boxSpawnY = p.boxSpawnY;
+        _boxSpawnZ = p.boxSpawnZ;
+        _nParticles = p.nParticles;
+        _particleSize = p.particleSize;
+        _stepsPerFrame = p.stepsPerFrame;
+        _useLES = p.useLES;
+    }
 
-        Debug.Log($"[SFUnifiedCS] Applied defaults for {_scenario}");
+    public void ApplyLeapfrogRingsPreset(SFUnifiedLeapfrogRingsPreset p)
+    {
+        vol_size = (int[])p.vol_size?.Clone() ?? new[] { 10, 5, 5 };
+        vol_res = (int[])p.vol_res?.Clone() ?? new[] { 128, 64, 64 };
+        hbar = p.hbar;
+        dt = p.dt;
+        _velocity = p.velocity;
+        _ring1Radius = p.ring1Radius;
+        _ring2Radius = p.ring2Radius;
+        _ring1Normal = p.ring1Normal;
+        _ring2Normal = p.ring2Normal;
+        _boxSpawnX = p.boxSpawnX;
+        _boxSpawnY = p.boxSpawnY;
+        _boxSpawnZ = p.boxSpawnZ;
+        _nParticles = p.nParticles;
+        _particleSize = p.particleSize;
+        _stepsPerFrame = p.stepsPerFrame;
+        _useLES = p.useLES;
     }
 
     #endregion

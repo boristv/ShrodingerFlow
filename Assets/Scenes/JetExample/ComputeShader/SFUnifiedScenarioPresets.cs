@@ -1,0 +1,163 @@
+using UnityEngine;
+
+/// <summary>
+/// Пресеты для «Apply Scenario Defaults»: правьте .asset в инспекторе (как «снимок» с референсных сцен).
+/// Jet → JetExampleCS.unity; остальное → UnifiedCS.unity / SFObstacle.cs (compute).
+/// </summary>
+[CreateAssetMenu(fileName = "SFUnifiedScenarioPresets", menuName = "ShrodingerFlow/SF Unified Scenario Presets")]
+public class SFUnifiedScenarioPresets : ScriptableObject
+{
+    public const string DefaultAssetPath =
+        "Assets/Scenes/JetExample/ComputeShader/SFUnifiedScenarioPresets.asset";
+
+    [Header("Jet — JetExampleCS.unity (SFJetCS)")]
+    public SFUnifiedJetPreset jet;
+
+    [Header("SphereObstacle — как ObstacleExample.unity (SFObstacle)")]
+    public SFUnifiedSphereObstaclePreset sphereObstacle;
+
+    [Header("CylinderObstacle — UnifiedCS.unity")]
+    public SFUnifiedCylinderObstaclePreset cylinderObstacle;
+
+    [Header("TwoSpheres — UnifiedCS.unity")]
+    public SFUnifiedTwoSpheresPreset twoSpheres;
+
+    [Header("LeapfrogRings")]
+    public SFUnifiedLeapfrogRingsPreset leapfrogRings;
+
+    /// <summary>Встроенные значения (копия референсных сцен на момент добавления).</summary>
+    public static SFUnifiedScenarioPresets CreateBuiltIn()
+    {
+        var s = CreateInstance<SFUnifiedScenarioPresets>();
+        s.FillBuiltIn();
+        return s;
+    }
+
+    public void FillBuiltIn()
+    {
+        jet = new SFUnifiedJetPreset
+        {
+            vol_size = new[] { 4, 2, 2 },
+            vol_res = new[] { 64, 32, 32 },
+            hbar = 0.1f,
+            dt = 1f / 48f,
+            velocity = new Vector3(1f, 0f, 0f),
+            nozzleCen = new Vector3(0.3f, 0.966f, 1.066f),
+            nozzleLen = 0.5f,
+            nozzleRad = 0.5f,
+            nParticles = 50,
+            particleSize = 0.05f,
+            stepsPerFrame = 1,
+            useLES = true
+        };
+
+        // Как ObstacleExample (SFObstacle): vol/hbar/dt/фон/сопло/боксы.
+        // В CUDA cuFFT resX=192 допустим; здесь radix-2 FFT — только степени двойки (192 → симуляция ломалась).
+        sphereObstacle = new SFUnifiedSphereObstaclePreset
+        {
+            vol_size = new[] { 6, 2, 2 },
+            vol_res = new[] { 128, 64, 64 },
+            hbar = 0.02f,
+            dt = 1f / 48f,
+            velocity = new Vector3(1f, 0f, 0f),
+            obstaclePos1 = new Vector3(1.5f, 1f, 1f),
+            obstacleRadius1 = 0.5f,
+            nozzleCen = new Vector3(0.3f, 0.966f, 1.066f),
+            nozzleLen = 0.5f,
+            nozzleRad = 0.4f,
+            boxSpawnX = new Vector2(3f, 3f),
+            boxSpawnY = new Vector2(0.1f, 1.9f),
+            boxSpawnZ = new Vector2(0.5f, 1.9f),
+            nParticles = 100,
+            particleSize = 0.05f,
+            stepsPerFrame = 3,
+            useLES = true
+        };
+
+        cylinderObstacle = new SFUnifiedCylinderObstaclePreset
+        {
+            vol_size = new[] { 4, 2, 2 },
+            vol_res = new[] { 64, 32, 32 },
+            hbar = 0.1f,
+            dt = 1f / 12f,
+            velocity = new Vector3(-0.2f, 0f, 0f),
+            obstaclePos1 = new Vector3(1.5f, 1f, 1f),
+            obstacleRadius1 = 0.5f,
+            nozzleCen = new Vector3(0.3f, 1f, 1f),
+            boxSpawnX = new Vector2(0.3f, 0.3f),
+            boxSpawnY = new Vector2(0.5f, 1.5f),
+            boxSpawnZ = new Vector2(0.5f, 1.5f),
+            nParticles = 50,
+            particleSize = 0.1f,
+            stepsPerFrame = 3,
+            useLES = false
+        };
+
+        twoSpheres = new SFUnifiedTwoSpheresPreset
+        {
+            vol_size = new[] { 4, 2, 2 },
+            vol_res = new[] { 64, 32, 32 },
+            hbar = 0.1f,
+            dt = 1f / 12f,
+            velocity = new Vector3(-0.2f, 0f, 0f),
+            obstaclePos1 = new Vector3(1.5f, 1f, 1f),
+            obstacleRadius1 = 0.5f,
+            obstaclePos2 = new Vector3(2.5f, 1f, 1f),
+            obstacleRadius2 = 0.5f,
+            boxSpawnX = new Vector2(0.3f, 0.3f),
+            boxSpawnY = new Vector2(0.5f, 1.5f),
+            boxSpawnZ = new Vector2(0.5f, 1.5f),
+            nParticles = 50,
+            particleSize = 0.1f,
+            stepsPerFrame = 3,
+            useLES = false
+        };
+
+        leapfrogRings = new SFUnifiedLeapfrogRingsPreset
+        {
+            vol_size = new[] { 10, 5, 5 },
+            vol_res = new[] { 128, 64, 64 },
+            hbar = 0.1f,
+            dt = 1f / 12f,
+            velocity = new Vector3(-0.2f, 0f, 0f),
+            ring1Radius = 1.5f,
+            ring2Radius = 0.9f,
+            ring1Normal = new Vector3(-1f, 0f, 0f),
+            ring2Normal = new Vector3(-1f, 0f, 0f),
+            boxSpawnX = new Vector2(3f, 7f),
+            boxSpawnY = new Vector2(0.5f, 4.5f),
+            boxSpawnZ = new Vector2(0.5f, 4.5f),
+            nParticles = 100000,
+            particleSize = 0.1f,
+            stepsPerFrame = 3,
+            useLES = false
+        };
+    }
+
+    public void ApplyTo(SFUnifiedCS target)
+    {
+        ApplyTo(target, target.CurrentScenario);
+    }
+
+    public void ApplyTo(SFUnifiedCS target, SFUnifiedCS.ScenarioType scenario)
+    {
+        switch (scenario)
+        {
+            case SFUnifiedCS.ScenarioType.Jet:
+                target.ApplyJetPreset(jet);
+                break;
+            case SFUnifiedCS.ScenarioType.SphereObstacle:
+                target.ApplySphereObstaclePreset(sphereObstacle);
+                break;
+            case SFUnifiedCS.ScenarioType.CylinderObstacle:
+                target.ApplyCylinderObstaclePreset(cylinderObstacle);
+                break;
+            case SFUnifiedCS.ScenarioType.TwoSpheres:
+                target.ApplyTwoSpheresPreset(twoSpheres);
+                break;
+            case SFUnifiedCS.ScenarioType.LeapfrogRings:
+                target.ApplyLeapfrogRingsPreset(leapfrogRings);
+                break;
+        }
+    }
+}

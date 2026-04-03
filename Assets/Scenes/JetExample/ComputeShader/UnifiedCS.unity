@@ -157,12 +157,13 @@ MonoBehaviour:
   _fftShader: {fileID: 7200000, guid: 1c06a635ac3034f0982bf39e14cfd35e, type: 3}
   _particlesShader: {fileID: 7200000, guid: 2894e3a1b59434c4f8a90079f8036355, type: 3}
   _lesShader: {fileID: 7200000, guid: de57605fec55e4a0096a1b3240cc595b, type: 3}
-  _scenario: 0
+  _scenarioPresetsOverride: {fileID: 0}
+  _scenario: 1
   vol_size: 040000000200000002000000
   vol_res: 400000002000000020000000
   hbar: 0.1
-  dt: 0.020833334
-  _velocity: {x: 1, y: 0, z: 0}
+  dt: 0.083333336
+  _velocity: {x: -0.2, y: 0, z: 0}
   _nozzleCen: {x: 0.3, y: 0.966, z: 1.066}
   _nozzleLen: 0.5
   _nozzleRad: 0.5
@@ -175,13 +176,13 @@ MonoBehaviour:
   _ring1Normal: {x: -1, y: 0, z: 0}
   _ring2Normal: {x: -1, y: 0, z: 0}
   _nParticles: 50
-  _particleSize: 0.05
-  _boxSpawnX: {x: 3, y: 7}
+  _particleSize: 0.1
+  _boxSpawnX: {x: 5, y: 5}
   _boxSpawnY: {x: 0.5, y: 4.5}
   _boxSpawnZ: {x: 0.5, y: 4.5}
   _useLES: 0
   _paused: 0
-  _stepsPerFrame: 1
+  _stepsPerFrame: 3
 --- !u!4 &362555268
 Transform:
   m_ObjectHideFlags: 0

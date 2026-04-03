@@ -32,7 +32,19 @@ namespace ComputeShaderSF
             ComputeShader lesShader, int[] volSize, int[] volRes, float hbar, float dt)
         {
             sizeX = volSize[0]; sizeY = volSize[1]; sizeZ = volSize[2];
-            resX = volRes[0]; resY = volRes[1]; resZ = volRes[2];
+            int rx0 = volRes[0], ry0 = volRes[1], rz0 = volRes[2];
+            resX = FloorToPowerOfTwo(rx0);
+            resY = FloorToPowerOfTwo(ry0);
+            resZ = FloorToPowerOfTwo(rz0);
+            if (resX != rx0 || resY != ry0 || resZ != rz0)
+            {
+                volRes[0] = resX;
+                volRes[1] = resY;
+                volRes[2] = resZ;
+                Debug.LogWarning(
+                    $"[CSISF] SFComputeFFT radix-2: vol_res приведено к степеням двойки (было {rx0},{ry0},{rz0} → {resX},{resY},{resZ}). " +
+                    "Иначе ψ/FFT ломаются и частицы «пропадают». Сохрани сцену, чтобы зафиксировать значения.");
+            }
             num = resX * resY * resZ;
             dx = sizeX / (float)resX;
             dy = sizeY / (float)resY;
@@ -77,6 +89,18 @@ namespace ComputeShaderSF
             BuildPositionGrids();
             BuildMask();
             BuildFac();
+        }
+
+        private static bool IsPowerOfTwo(int n) => n > 0 && (n & (n - 1)) == 0;
+
+        /// <summary>Наибольшая степень двойки ≤ n (для radix-2 FFT; например 192 → 128).</summary>
+        private static int FloorToPowerOfTwo(int n)
+        {
+            if (n <= 0) return 1;
+            if (IsPowerOfTwo(n)) return n;
+            int p = 1;
+            while (p * 2 <= n) p *= 2;
+            return p;
         }
 
         private void BuildPositionGrids()
