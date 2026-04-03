@@ -158,9 +158,9 @@ MonoBehaviour:
   _particlesShader: {fileID: 7200000, guid: 2894e3a1b59434c4f8a90079f8036355, type: 3}
   _lesShader: {fileID: 7200000, guid: de57605fec55e4a0096a1b3240cc595b, type: 3}
   _scenarioPresetsOverride: {fileID: 0}
-  _scenario: 1
-  vol_size: 040000000200000002000000
-  vol_res: 400000002000000020000000
+  _scenario: 4
+  vol_size: 0a0000000500000005000000
+  vol_res: 800000004000000040000000
   hbar: 0.1
   dt: 0.083333336
   _velocity: {x: -0.2, y: 0, z: 0}

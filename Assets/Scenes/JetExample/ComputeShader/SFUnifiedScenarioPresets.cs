@@ -2,7 +2,9 @@ using UnityEngine;
 
 /// <summary>
 /// Пресеты для «Apply Scenario Defaults»: правьте .asset в инспекторе (как «снимок» с референсных сцен).
-/// Jet → JetExampleCS.unity; остальное → UnifiedCS.unity / SFObstacle.cs (compute).
+/// Jet — JetExampleCS.unity; Sphere — ObstacleExample (SFObstacle); Cylinder — OtherObstacleExample (OtherSFObstacle);
+/// TwoSpheres — дефолты SFUnifiedCS / UnifiedCS.unity;
+/// Leapfrog — кольца и симуляция из UnifiedCS.unity, объём 10×5×5 (кольца не влезают в 4×2×2).
 /// </summary>
 [CreateAssetMenu(fileName = "SFUnifiedScenarioPresets", menuName = "ShrodingerFlow/SF Unified Scenario Presets")]
 public class SFUnifiedScenarioPresets : ScriptableObject
@@ -16,13 +18,13 @@ public class SFUnifiedScenarioPresets : ScriptableObject
     [Header("SphereObstacle — как ObstacleExample.unity (SFObstacle)")]
     public SFUnifiedSphereObstaclePreset sphereObstacle;
 
-    [Header("CylinderObstacle — UnifiedCS.unity")]
+    [Header("CylinderObstacle — OtherObstacleExample.unity (OtherSFObstacle)")]
     public SFUnifiedCylinderObstaclePreset cylinderObstacle;
 
-    [Header("TwoSpheres — UnifiedCS.unity")]
+    [Header("TwoSpheres — SFUnifiedCS по умолчанию / UnifiedCS.unity")]
     public SFUnifiedTwoSpheresPreset twoSpheres;
 
-    [Header("LeapfrogRings")]
+    [Header("LeapfrogRings — UnifiedCS.unity (кольца + spawn), vol 10×5×5")]
     public SFUnifiedLeapfrogRingsPreset leapfrogRings;
 
     /// <summary>Встроенные значения (копия референсных сцен на момент добавления).</summary>
@@ -74,25 +76,28 @@ public class SFUnifiedScenarioPresets : ScriptableObject
             useLES = true
         };
 
+        // OtherObstacleExample (OtherSFObstacle): те же vol/hbar/dt/фон/сопло/n, боксы как в инспекторе (Y/Z не как у сферы).
+        // В сцене resX=192; radix-2 FFT — 128×64×64.
         cylinderObstacle = new SFUnifiedCylinderObstaclePreset
         {
-            vol_size = new[] { 4, 2, 2 },
-            vol_res = new[] { 64, 32, 32 },
-            hbar = 0.1f,
-            dt = 1f / 12f,
-            velocity = new Vector3(-0.2f, 0f, 0f),
+            vol_size = new[] { 6, 2, 2 },
+            vol_res = new[] { 128, 64, 64 },
+            hbar = 0.02f,
+            dt = 1f / 48f,
+            velocity = new Vector3(1f, 0f, 0f),
             obstaclePos1 = new Vector3(1.5f, 1f, 1f),
             obstacleRadius1 = 0.5f,
-            nozzleCen = new Vector3(0.3f, 1f, 1f),
-            boxSpawnX = new Vector2(0.3f, 0.3f),
-            boxSpawnY = new Vector2(0.5f, 1.5f),
-            boxSpawnZ = new Vector2(0.5f, 1.5f),
-            nParticles = 50,
-            particleSize = 0.1f,
+            nozzleCen = new Vector3(0.3f, 0.966f, 1.066f),
+            boxSpawnX = new Vector2(3f, 3f),
+            boxSpawnY = new Vector2(0.6f, 1.4f),
+            boxSpawnZ = new Vector2(0.1f, 1.9f),
+            nParticles = 100,
+            particleSize = 0.05f,
             stepsPerFrame = 3,
-            useLES = false
+            useLES = true
         };
 
+        // Как сериализованные поля по умолчанию в SFUnifiedCS (сценарий TwoSpheres).
         twoSpheres = new SFUnifiedTwoSpheresPreset
         {
             vol_size = new[] { 4, 2, 2 },
@@ -113,6 +118,7 @@ public class SFUnifiedScenarioPresets : ScriptableObject
             useLES = false
         };
 
+        // UnifiedCS.unity: кольца, hbar/dt/velocity/_nParticles; vol 10×5×5 — иначе радиусы колец не помещаются в домен.
         leapfrogRings = new SFUnifiedLeapfrogRingsPreset
         {
             vol_size = new[] { 10, 5, 5 },

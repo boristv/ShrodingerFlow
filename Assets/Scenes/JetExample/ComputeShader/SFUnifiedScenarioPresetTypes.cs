@@ -4,7 +4,7 @@ using UnityEngine;
 /// <summary>
 /// Данные пресетов для контекстного меню «Apply Scenario Defaults».
 /// Редактируются в SFUnifiedScenarioPresets.asset (источник правды вместо констант в SFUnifiedCS).
-/// SphereObstacle — копия полей из ObstacleExample.unity (SFObstacle).
+/// SphereObstacle — ObstacleExample (SFObstacle); CylinderObstacle — OtherObstacleExample (OtherSFObstacle); TwoSpheres — дефолты SFUnifiedCS.
 /// </summary>
 [Serializable]
 public struct SFUnifiedJetPreset
