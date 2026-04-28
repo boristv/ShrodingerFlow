@@ -7,6 +7,9 @@ public static class UnifiedCSSceneSetup
 {
     private const string ShaderDir = "Assets/Scenes/JetExample/ComputeShader/";
     private const string ParticlesShaderDir = "Assets/Particles/";
+    private const string RaymarchShaderPath = "Assets/Scripts/Rendering/Raymarch/Raymarching.shader";
+    private const string PsiDensityComputePath = "Assets/Particles/PsiDensityToVolume3D.compute";
+    private const string ParticlesToDensityComputePath = "Assets/Particles/ParticlesToDensityVolume.compute";
     private const string ScenePath = "Assets/Scenes/JetExample/ComputeShader/UnifiedCS.unity";
 
     [MenuItem("ShrodingerFlow/Create Unified CS Scene")]
@@ -51,10 +54,20 @@ public static class UnifiedCSSceneSetup
         display.shaderBillboard = bb;
         display.shaderShaded = surf;
 
+        display.shaderRaymarch = AssetDatabase.LoadAssetAtPath<Shader>(RaymarchShaderPath);
+        display.psiDensityToVolume = AssetDatabase.LoadAssetAtPath<ComputeShader>(PsiDensityComputePath);
+        display.particlesToDensityVolume = AssetDatabase.LoadAssetAtPath<ComputeShader>(ParticlesToDensityComputePath);
+
         if (bb == null)
             Debug.LogWarning($"[UnifiedCSSceneSetup] Shader not found: {ParticlesShaderDir}ParticleBillboard.shader");
         if (surf == null)
             Debug.LogWarning($"[UnifiedCSSceneSetup] Shader not found: {ParticlesShaderDir}Particle3DSurf.shader");
+        if (display.shaderRaymarch == null)
+            Debug.LogWarning($"[UnifiedCSSceneSetup] Shader not found: {RaymarchShaderPath}");
+        if (display.psiDensityToVolume == null)
+            Debug.LogWarning($"[UnifiedCSSceneSetup] ComputeShader not found: {PsiDensityComputePath}");
+        if (display.particlesToDensityVolume == null)
+            Debug.LogWarning($"[UnifiedCSSceneSetup] ComputeShader not found: {ParticlesToDensityComputePath}");
     }
 
     private static void AttachUnifiedCS(GameObject go)

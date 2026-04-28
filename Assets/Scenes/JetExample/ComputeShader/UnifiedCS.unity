@@ -177,7 +177,6 @@ MonoBehaviour:
   _ring2Normal: {x: -1, y: 0, z: 0}
   _nParticles: 50
   _particleSize: 0.05
-  _automaticParticleDisplayScale: 0
   _boxSpawnX: {x: 5, y: 5}
   _boxSpawnY: {x: 0.5, y: 4.5}
   _boxSpawnZ: {x: 0.5, y: 4.5}
@@ -223,8 +222,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bdfe3008efbf29745879ab1d40574478, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  mode: 2
+  mode: 3
   scale: 1
+  _automaticSimulationScale: 0
+  _particleSizeToScaleMultiplier: 50
   colourMap:
     serializedVersion: 2
     key0: {r: 0.13363299, g: 0.34235913, b: 0.7264151, a: 1}
@@ -260,6 +261,17 @@ MonoBehaviour:
   buffers: {fileID: 362555269}
   shaderShaded: {fileID: 4800000, guid: 638bb1bdb9b8e374e8a5cbcd595e3973, type: 3}
   shaderBillboard: {fileID: 4800000, guid: 13de1318fe7184e48bdf807b928b641b, type: 3}
+  shaderRaymarch: {fileID: 4800000, guid: 557ee3bc7bd1ca242a49f3816e6025b5, type: 3}
+  raymarchDensitySource: 1
+  psiDensityToVolume: {fileID: 7200000, guid: 0c4c6524fcf59422f9d8eb76ac53d6c4, type: 3}
+  particlesToDensityVolume: {fileID: 7200000, guid: f4e3d2c1b0a9876543210fedcba98765, type: 3}
+  _raymarchSunLight: {fileID: 797636674}
+  _raymarchDensityOffset: 200
+  _raymarchDensityMultiplier: 0.05
+  _raymarchStepSize: 0.02
+  _raymarchLightStepSize: 0.1
+  _raymarchNumRefractions: 4
+  _raymarchExtinctionCoeff: {x: 30, y: 5, z: 1.02}
 --- !u!1 &694193781
 GameObject:
   m_ObjectHideFlags: 0

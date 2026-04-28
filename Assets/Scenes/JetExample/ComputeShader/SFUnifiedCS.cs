@@ -8,7 +8,7 @@ using UnityEditor;
 // «Apply Scenario Defaults» берёт числа из SFUnifiedScenarioPresets (ассет или встроенная копия),
 // а не из switch в этом файле. Референс: JetExampleCS.unity, UnifiedCS.unity — см. SFUnifiedScenarioPresets.cs.
 
-public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource
+public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensitySource
 {
     public enum ScenarioType
     {
@@ -769,6 +769,33 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource
                 Gizmos.DrawWireSphere(transform.position + _obstaclePos2, _obstacleRadius2);
                 break;
         }
+    }
+
+    #endregion
+
+    #region IRaymarchDensitySource
+
+    public bool TryGetPsiVolume(out ComputeBuffer psi1, out ComputeBuffer psi2,
+        out Vector3 volumeMinWorld, out Vector3 volumeSizeWorld,
+        out int resX, out int resY, out int resZ)
+    {
+        psi1 = null;
+        psi2 = null;
+        volumeMinWorld = default;
+        volumeSizeWorld = default;
+        resX = resY = resZ = 0;
+
+        if (!_initialized || _isf == null)
+            return false;
+
+        psi1 = _isf.psi1;
+        psi2 = _isf.psi2;
+        volumeMinWorld = transform.position;
+        volumeSizeWorld = new Vector3(vol_size[0], vol_size[1], vol_size[2]);
+        resX = _isf.resX;
+        resY = _isf.resY;
+        resZ = _isf.resZ;
+        return true;
     }
 
     #endregion

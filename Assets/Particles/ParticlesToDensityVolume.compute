@@ -1,0 +1,81 @@
+#pragma kernel ClearScratch
+#pragma kernel SplatterParticles
+#pragma kernel ScratchToDensity
+
+RWStructuredBuffer<uint> DensityScratch;
+RWTexture3D<float4> DensityOut;
+
+StructuredBuffer<float3> ParticlePositions;
+
+uint _ResX;
+uint _ResY;
+uint _ResZ;
+uint _TotalVoxels;
+uint _ParticleCount;
+
+float3 _VolumeMinWorld;
+float3 _VolumeSizeWorld;
+
+float _SplatSigmaCells;
+uint _SplatWeightFixed;
+float _ScratchDenom;
+
+[numthreads(64, 1, 1)]
+void ClearScratch(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
+{
+    uint i = groupId.x * 64u + groupIndex;
+    if (i >= _TotalVoxels)
+        return;
+    DensityScratch[i] = 0u;
+}
+
+[numthreads(256, 1, 1)]
+void SplatterParticles(uint id : SV_DispatchThreadID)
+{
+    if (id >= _ParticleCount)
+        return;
+
+    float3 wp = ParticlePositions[id];
+    float3 local = wp - _VolumeMinWorld;
+    float3 uvw = local / _VolumeSizeWorld;
+    if (any(uvw < 0.0) || any(uvw > 1.0))
+        return;
+
+    float3 gf = uvw * float3((float)_ResX - 1.0001, (float)_ResY - 1.0001, (float)_ResZ - 1.0001);
+    int3 center = (int3)floor(gf + 0.5);
+
+    int r = 2;
+    float sig = max(0.25, _SplatSigmaCells);
+    float sig2 = 2.0 * sig * sig;
+
+    for (int dz = -r; dz <= r; dz++)
+    for (int dy = -r; dy <= r; dy++)
+    for (int dx = -r; dx <= r; dx++)
+    {
+        int3 c = center + int3(dx, dy, dz);
+        if (any(c < 0))
+            continue;
+        if (c.x >= (int)_ResX || c.y >= (int)_ResY || c.z >= (int)_ResZ)
+            continue;
+
+        float dist = length(float3(dx, dy, dz));
+        float w = exp(-(dist * dist) / sig2);
+        uint add = (uint)(w * (float)_SplatWeightFixed + 0.5);
+        if (add == 0u)
+            continue;
+
+        uint lin = (uint)c.x * _ResY * _ResZ + (uint)c.y * _ResZ + (uint)c.z;
+        InterlockedAdd(DensityScratch[lin], add);
+    }
+}
+
+[numthreads(8, 8, 8)]
+void ScratchToDensity(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _ResX || id.y >= _ResY || id.z >= _ResZ)
+        return;
+
+    uint lin = id.x * _ResY * _ResZ + id.y * _ResZ + id.z;
+    float v = saturate((float)DensityScratch[lin] / max(_ScratchDenom, 1.0));
+    DensityOut[id] = float4(v, v, v, 1.0);
+}

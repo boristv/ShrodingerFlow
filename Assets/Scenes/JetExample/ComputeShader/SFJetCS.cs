@@ -2,7 +2,7 @@ using UnityEngine;
 using ComputeShaderSF;
 using ShrodingerFlow.Particles;
 
-public class SFJetCS : SFBase, ISimulationParticleSizeSource
+public class SFJetCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensitySource
 {
     [Header("Compute Shaders")]
     [SerializeField] private ComputeShader _kernelsShader;
@@ -264,4 +264,31 @@ public class SFJetCS : SFBase, ISimulationParticleSizeSource
         Gizmos.color = Color.yellow;
         Gizmos.DrawWireCube(transform.position + volV3 / 2f, volV3);
     }
+
+    #region IRaymarchDensitySource
+
+    public bool TryGetPsiVolume(out ComputeBuffer psi1, out ComputeBuffer psi2,
+        out Vector3 volumeMinWorld, out Vector3 volumeSizeWorld,
+        out int resX, out int resY, out int resZ)
+    {
+        psi1 = null;
+        psi2 = null;
+        volumeMinWorld = default;
+        volumeSizeWorld = default;
+        resX = resY = resZ = 0;
+
+        if (!_initialized || _isf == null)
+            return false;
+
+        psi1 = _isf.psi1;
+        psi2 = _isf.psi2;
+        volumeMinWorld = transform.position;
+        volumeSizeWorld = new Vector3(vol_size[0], vol_size[1], vol_size[2]);
+        resX = _isf.resX;
+        resY = _isf.resY;
+        resZ = _isf.resZ;
+        return true;
+    }
+
+    #endregion
 }

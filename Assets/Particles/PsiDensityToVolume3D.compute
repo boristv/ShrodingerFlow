@@ -1,0 +1,22 @@
+#pragma kernel PsiToDensity
+
+StructuredBuffer<float2> Psi1;
+StructuredBuffer<float2> Psi2;
+RWTexture3D<float4> DensityOut;
+
+uint _ResX;
+uint _ResY;
+uint _ResZ;
+
+[numthreads(8, 8, 8)]
+void PsiToDensity(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _ResX || id.y >= _ResY || id.z >= _ResZ)
+        return;
+
+    uint idx = id.x * _ResY * _ResZ + id.y * _ResZ + id.z;
+    float2 p1 = Psi1[idx];
+    float2 p2 = Psi2[idx];
+    float rho = dot(p1, p1) + dot(p2, p2);
+    DensityOut[id] = float4(rho, rho, rho, 1.0);
+}

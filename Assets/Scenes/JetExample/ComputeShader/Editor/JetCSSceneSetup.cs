@@ -9,6 +9,9 @@ public static class JetCSSceneSetup
     private const string ScenePath = "Assets/Scenes/JetExample/ComputeShader/JetExampleCS.unity";
     private const string ShaderDir = "Assets/Scenes/JetExample/ComputeShader/";
     private const string ParticlesShaderDir = "Assets/Particles/";
+    private const string RaymarchShaderPath = "Assets/Scripts/Rendering/Raymarch/Raymarching.shader";
+    private const string PsiDensityComputePath = "Assets/Particles/PsiDensityToVolume3D.compute";
+    private const string ParticlesToDensityComputePath = "Assets/Particles/ParticlesToDensityVolume.compute";
 
     [MenuItem("ShrodingerFlow/Create JetExample CS Scene")]
     public static void CreateScene()
@@ -55,10 +58,20 @@ public static class JetCSSceneSetup
         display.shaderBillboard = bb;
         display.shaderShaded = surf;
 
+        display.shaderRaymarch = AssetDatabase.LoadAssetAtPath<Shader>(RaymarchShaderPath);
+        display.psiDensityToVolume = AssetDatabase.LoadAssetAtPath<ComputeShader>(PsiDensityComputePath);
+        display.particlesToDensityVolume = AssetDatabase.LoadAssetAtPath<ComputeShader>(ParticlesToDensityComputePath);
+
         if (bb == null)
             Debug.LogWarning($"[JetCSSceneSetup] Shader not found: {ParticlesShaderDir}ParticleBillboard.shader");
         if (surf == null)
             Debug.LogWarning($"[JetCSSceneSetup] Shader not found: {ParticlesShaderDir}Particle3DSurf.shader");
+        if (display.shaderRaymarch == null)
+            Debug.LogWarning($"[JetCSSceneSetup] Shader not found: {RaymarchShaderPath}");
+        if (display.psiDensityToVolume == null)
+            Debug.LogWarning($"[JetCSSceneSetup] ComputeShader not found: {PsiDensityComputePath}");
+        if (display.particlesToDensityVolume == null)
+            Debug.LogWarning($"[JetCSSceneSetup] ComputeShader not found: {ParticlesToDensityComputePath}");
     }
 
     private static void AttachJetCS(GameObject go)
