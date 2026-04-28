@@ -85,7 +85,11 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource
     private Vector3[] _renderVel;
     private float[] _pxArr, _pyArr, _pzArr;
     private Vector3[] _prevPos;
+    /// <summary>Сглаженная скорость для цвета в шейдере (те же индексы, что у частиц GPU).</summary>
+    private Vector3[] _displayVelSmooth;
     private int _particlesCount;
+
+    private const float DisplayVelocityBlend = 0.32f;
 
     private float _kvecX, _kvecY, _kvecZ;
     private float _omega;
@@ -128,6 +132,7 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource
         _pyArr = new float[maxParticles];
         _pzArr = new float[maxParticles];
         _prevPos = new Vector3[maxParticles];
+        _displayVelSmooth = new Vector3[maxParticles];
 
         InitScenario();
         _initialized = true;
@@ -179,7 +184,7 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource
                 {
                     _compactCounter = 0;
                     _particles.CompactParticles(_pxArr, _pyArr, _pzArr,
-                        vol_size[0], vol_size[1], vol_size[2]);
+                        vol_size[0], vol_size[1], vol_size[2], _prevPos, _displayVelSmooth);
                     _particlesCount = _particles.Size;
                 }
             }
@@ -579,6 +584,7 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource
         _particles.ReadPositions(_pxArr, _pyArr, _pzArr);
 
         var offset = transform.position;
+
         bool cull = _scenario == ScenarioType.Jet;
         float maxX = vol_size[0], maxY = vol_size[1], maxZ = vol_size[2];
         float velThreshold = maxX * maxX + maxY * maxY + maxZ * maxZ;
@@ -588,9 +594,6 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource
         {
             float px = _pxArr[i], py = _pyArr[i], pz = _pzArr[i];
 
-            if (cull && (px < 0f || px > maxX || py < 0f || py > maxY || pz < 0f || pz > maxZ))
-                continue;
-
             var pos = new Vector3(px, py, pz) + offset;
             var lastPos = _prevPos[i];
             _prevPos[i] = pos;
@@ -599,8 +602,13 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource
             if (vel.sqrMagnitude > velThreshold)
                 vel = Vector3.zero;
 
+            _displayVelSmooth[i] = Vector3.Lerp(_displayVelSmooth[i], vel, Mathf.Clamp01(DisplayVelocityBlend));
+
+            if (cull && (px < 0f || px > maxX || py < 0f || py > maxY || pz < 0f || pz > maxZ))
+                continue;
+
             _renderPos[visible] = pos;
-            _renderVel[visible] = vel;
+            _renderVel[visible] = _displayVelSmooth[i];
             visible++;
         }
 

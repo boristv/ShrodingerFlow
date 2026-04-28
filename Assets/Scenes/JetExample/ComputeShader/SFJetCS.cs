@@ -41,7 +41,10 @@ public class SFJetCS : SFBase, ISimulationParticleSizeSource
     private Vector3[] _renderVel;
     private float[] _pxArr, _pyArr, _pzArr;
     private Vector3[] _prevPos;
+    private Vector3[] _displayVelSmooth;
     private int _particlesCount;
+
+    private const float DisplayVelocityBlend = 0.32f;
 
     private float _kvecX, _kvecY, _kvecZ;
     private float _omega;
@@ -74,6 +77,7 @@ public class SFJetCS : SFBase, ISimulationParticleSizeSource
         _pyArr = new float[maxCloud];
         _pzArr = new float[maxCloud];
         _prevPos = new Vector3[maxCloud];
+        _displayVelSmooth = new Vector3[maxCloud];
 
         InitPsi();
         BuildIsJetMask();
@@ -175,7 +179,7 @@ public class SFJetCS : SFBase, ISimulationParticleSizeSource
             {
                 _compactCounter = 0;
                 _particles.CompactParticles(_pxArr, _pyArr, _pzArr,
-                    vol_size[0], vol_size[1], vol_size[2]);
+                    vol_size[0], vol_size[1], vol_size[2], _prevPos, _displayVelSmooth);
                 _particlesCount = _particles.Size;
             }
         }
@@ -220,20 +224,25 @@ public class SFJetCS : SFBase, ISimulationParticleSizeSource
         _particles.ReadPositions(_pxArr, _pyArr, _pzArr);
 
         var offset = transform.position;
+
         float maxX = vol_size[0], maxY = vol_size[1], maxZ = vol_size[2];
         int visible = 0;
         for (int i = 0; i < _particlesCount; i++)
         {
             float px = _pxArr[i], py = _pyArr[i], pz = _pzArr[i];
+
+            var pos = new Vector3(px, py, pz) + offset;
+            var lastPos = _prevPos[i];
+            _prevPos[i] = pos;
+
+            var vel = pos - lastPos;
+            _displayVelSmooth[i] = Vector3.Lerp(_displayVelSmooth[i], vel, Mathf.Clamp01(DisplayVelocityBlend));
+
             if (px < 0f || px > maxX || py < 0f || py > maxY || pz < 0f || pz > maxZ)
                 continue;
 
-            var pos = new Vector3(px, py, pz) + offset;
-            var vel = pos - _prevPos[i];
-            _prevPos[i] = pos;
-
             _renderPos[visible] = pos;
-            _renderVel[visible] = vel;
+            _renderVel[visible] = _displayVelSmooth[i];
             visible++;
         }
 

@@ -194,8 +194,14 @@ namespace ComputeShaderSF
             _z.GetData(outZ, 0, 0, _size);
         }
 
+        /// <param name="reorderAux1">
+        /// Опционально: массив той же логической длины, что и частицы (напр. прошлые мировые позицы для цвета скорости).
+        /// При уплотнении переставляется тем же образом, что и позиции — иначе индекс перепутывает историю после компакта.
+        /// </param>
+        /// <param name="reorderAux2">Опционально второй массив (напр. сглаженная скорость для отображения).</param>
         public int CompactParticles(float[] px, float[] py, float[] pz,
-            float maxX, float maxY, float maxZ)
+            float maxX, float maxY, float maxZ,
+            Vector3[] reorderAux1 = null, Vector3[] reorderAux2 = null)
         {
             if (_size == 0) return 0;
 
@@ -216,6 +222,10 @@ namespace ComputeShaderSF
                     px[alive] = px[i];
                     py[alive] = py[i];
                     pz[alive] = pz[i];
+                    if (reorderAux1 != null)
+                        reorderAux1[alive] = reorderAux1[i];
+                    if (reorderAux2 != null)
+                        reorderAux2[alive] = reorderAux2[i];
                 }
                 alive++;
             }
