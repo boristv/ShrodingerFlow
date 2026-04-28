@@ -2,7 +2,7 @@ using UnityEngine;
 using ComputeShaderSF;
 using ShrodingerFlow.Particles;
 
-public class SFJetCS : SFBase
+public class SFJetCS : SFBase, ISimulationParticleSizeSource
 {
     [Header("Compute Shaders")]
     [SerializeField] private ComputeShader _kernelsShader;
@@ -48,6 +48,9 @@ public class SFJetCS : SFBase
     private Vector3 _volSizeV3;
     private bool _initialized;
     private int _compactCounter;
+    private float _particleSizeSyncedForDisplay = float.NaN;
+
+    public float SimulationParticleSize => _particleSize;
 
     private void Start()
     {
@@ -77,6 +80,33 @@ public class SFJetCS : SFBase
         InitJetFlow();
 
         _initialized = true;
+        if (float.IsNaN(_particleSizeSyncedForDisplay))
+            _particleSizeSyncedForDisplay = _particleSize;
+        SyncParticleDisplayScaleFromSimulation();
+    }
+
+    private void OnValidate()
+    {
+        if (float.IsNaN(_particleSizeSyncedForDisplay))
+            _particleSizeSyncedForDisplay = _particleSize;
+
+        if (_particleDisplay == null)
+            _particleDisplay = GetComponent<ParticleDisplay3D>();
+
+        if (_particleDisplay != null && _particleDisplay.AutomaticSimulationScale)
+            SyncParticleDisplayScaleFromSimulation();
+        else if (!Mathf.Approximately(_particleSize, _particleSizeSyncedForDisplay))
+            _particleSizeSyncedForDisplay = _particleSize;
+    }
+
+    private void SyncParticleDisplayScaleFromSimulation()
+    {
+        if (_particleDisplay == null)
+            _particleDisplay = GetComponent<ParticleDisplay3D>();
+        if (_particleDisplay == null || !_particleDisplay.AutomaticSimulationScale)
+            return;
+        _particleDisplay.ApplyAutomaticScaleFromSimulation(_particleSize);
+        _particleSizeSyncedForDisplay = _particleSize;
     }
 
     private void InitPsi()
@@ -130,21 +160,24 @@ public class SFJetCS : SFBase
 
     private void Update()
     {
-        if (!_initialized || _paused) return;
+        if (!_initialized) return;
 
-        for (int step = 0; step < _stepsPerFrame; step++)
+        if (!_paused)
         {
-            iterator++;
-            SimulationStep();
-        }
+            for (int step = 0; step < _stepsPerFrame; step++)
+            {
+                iterator++;
+                SimulationStep();
+            }
 
-        _compactCounter++;
-        if (_compactCounter >= 60)
-        {
-            _compactCounter = 0;
-            _particles.CompactParticles(_pxArr, _pyArr, _pzArr,
-                vol_size[0], vol_size[1], vol_size[2]);
-            _particlesCount = _particles.Size;
+            _compactCounter++;
+            if (_compactCounter >= 60)
+            {
+                _compactCounter = 0;
+                _particles.CompactParticles(_pxArr, _pyArr, _pzArr,
+                    vol_size[0], vol_size[1], vol_size[2]);
+                _particlesCount = _particles.Size;
+            }
         }
 
         UpdateParticleSystem();
@@ -205,9 +238,6 @@ public class SFJetCS : SFBase
         }
 
         _particleBuffers.Upload(_renderPos, _renderVel, visible);
-
-        if (_particleDisplay != null)
-            _particleDisplay.scale = _particleSize * 50f;
     }
 
     private void OnDestroy()

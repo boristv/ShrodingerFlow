@@ -19,6 +19,12 @@ namespace ShrodingerFlow.Particles
         [Header("Settings")]
         public DisplayMode mode = DisplayMode.Billboard;
         public float scale = 5f;
+        [SerializeField, InspectorName("Автоматический размер"),
+         Tooltip("Если включено — поле Scale выставляется из симуляции на этом же GameObject (поле «Размер частиц» × множитель ниже).")]
+        private bool _automaticSimulationScale;
+        [SerializeField, InspectorName("Множитель"),
+         Tooltip("Только при автоматическом размере: Scale = размер частиц симуляции × множитель (по умолчанию как раньше — 50).")]
+        private float _particleSizeToScaleMultiplier = 50f;
         public Gradient colourMap;
         public int gradientResolution = 64;
         public float velocityDisplayMax = 5f;
@@ -36,23 +42,63 @@ namespace ShrodingerFlow.Particles
 
         static readonly int ColourMapId = Shader.PropertyToID("_ColourMap");
 
+        public bool AutomaticSimulationScale => _automaticSimulationScale;
+
+        /// <summary>
+        /// При паузе Play Mode в редакторе <see cref="LateUpdate"/> не вызывается, но колбэки URP
+        /// (<see cref="RenderPipelineManager.beginCameraRendering"/>) всё ещё идут при перерисовке Game View.
+        /// </summary>
+        bool _usesScriptableRenderPipeline;
+
         void Awake()
         {
             if (buffers == null)
                 buffers = GetComponent<ParticleGpuBuffers>();
         }
 
+        void OnEnable()
+        {
+            RefreshPipelineUsage();
+            if (_usesScriptableRenderPipeline)
+                RenderPipelineManager.beginCameraRendering += OnBeginCameraRendering;
+        }
+
+        void OnDisable()
+        {
+            if (_usesScriptableRenderPipeline)
+                RenderPipelineManager.beginCameraRendering -= OnBeginCameraRendering;
+        }
+
+        void RefreshPipelineUsage()
+        {
+            _usesScriptableRenderPipeline = GraphicsSettings.renderPipelineAsset != null;
+        }
+
         void LateUpdate()
+        {
+            if (_usesScriptableRenderPipeline)
+                return;
+            IssueDrawMeshInstancedIndirect(Camera.main);
+        }
+
+        void OnBeginCameraRendering(ScriptableRenderContext context, Camera camera)
+        {
+            Camera main = Camera.main;
+            if (main == null || camera != main)
+                return;
+            IssueDrawMeshInstancedIndirect(camera);
+        }
+
+        void IssueDrawMeshInstancedIndirect(Camera cam)
         {
             if (buffers == null || buffers.PositionBuffer == null || buffers.ActiveCount <= 0)
                 return;
 
             UpdateSettings();
 
-            if (mode != DisplayMode.None && _mesh != null && _mat != null && _argsBuffer != null)
+            if (mode != DisplayMode.None && _mesh != null && _mat != null && _argsBuffer != null && cam != null)
             {
                 var bounds = new Bounds(Vector3.zero, Vector3.one * 10000f);
-                var cam = Camera.main;
                 Graphics.DrawMeshInstancedIndirect(_mesh, 0, _mat, bounds, _argsBuffer, 0, null,
                     ShadowCastingMode.Off, false, gameObject.layer, cam);
             }
@@ -113,6 +159,21 @@ namespace ShrodingerFlow.Particles
                 IndirectArgsUtil.CreateOrUpdateArgsBuffer(ref _argsBuffer, _mesh, buffers.ActiveCount);
         }
 
+        /// <summary>Выставляет <see cref="scale"/> из размера частиц симуляции (вызывается компонентом симуляции).</summary>
+        public void ApplyAutomaticScaleFromSimulation(float simulationParticleSize)
+        {
+            if (!_automaticSimulationScale) return;
+            scale = simulationParticleSize * _particleSizeToScaleMultiplier;
+        }
+
+        void TryApplyAutomaticScaleFromSimulation()
+        {
+            if (!_automaticSimulationScale) return;
+            var src = GetComponent<ISimulationParticleSizeSource>();
+            if (src != null)
+                ApplyAutomaticScaleFromSimulation(src.SimulationParticleSize);
+        }
+
         public static void TextureFromGradient(ref Texture2D texture, int width, Gradient gradient,
             FilterMode filterMode = FilterMode.Bilinear)
         {
@@ -147,6 +208,7 @@ namespace ShrodingerFlow.Particles
         void OnValidate()
         {
             _needsUpdate = true;
+            TryApplyAutomaticScaleFromSimulation();
         }
 
         void OnDestroy()

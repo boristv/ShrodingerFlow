@@ -8,7 +8,7 @@ using UnityEditor;
 // «Apply Scenario Defaults» берёт числа из SFUnifiedScenarioPresets (ассет или встроенная копия),
 // а не из switch в этом файле. Референс: JetExampleCS.unity, UnifiedCS.unity — см. SFUnifiedScenarioPresets.cs.
 
-public class SFUnifiedCS : SFBase
+public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource
 {
     public enum ScenarioType
     {
@@ -94,8 +94,13 @@ public class SFUnifiedCS : SFBase
     private bool _spawnEachStep;
     private bool _boundaryEachStep;
 
+    /// <summary>Последнее значение <see cref="_particleSize"/>, с которым синхронизировали <see cref="ParticleDisplay3D.scale"/>.</summary>
+    private float _particleSizeSyncedForDisplay = float.NaN;
+
     /// <summary>Текущий выбранный сценарий (для применения пресетов из SFUnifiedScenarioPresets).</summary>
     public ScenarioType CurrentScenario => _scenario;
+
+    public float SimulationParticleSize => _particleSize;
 
     #region Lifecycle
 
@@ -126,27 +131,57 @@ public class SFUnifiedCS : SFBase
 
         InitScenario();
         _initialized = true;
+        if (float.IsNaN(_particleSizeSyncedForDisplay))
+            _particleSizeSyncedForDisplay = _particleSize;
+        SyncParticleDisplayScaleFromSimulation();
+    }
+
+    private void OnValidate()
+    {
+        if (float.IsNaN(_particleSizeSyncedForDisplay))
+            _particleSizeSyncedForDisplay = _particleSize;
+
+        if (_particleDisplay == null)
+            _particleDisplay = GetComponent<ParticleDisplay3D>();
+
+        if (_particleDisplay != null && _particleDisplay.AutomaticSimulationScale)
+            SyncParticleDisplayScaleFromSimulation();
+        else if (!Mathf.Approximately(_particleSize, _particleSizeSyncedForDisplay))
+            _particleSizeSyncedForDisplay = _particleSize;
+    }
+
+    private void SyncParticleDisplayScaleFromSimulation()
+    {
+        if (_particleDisplay == null)
+            _particleDisplay = GetComponent<ParticleDisplay3D>();
+        if (_particleDisplay == null || !_particleDisplay.AutomaticSimulationScale)
+            return;
+        _particleDisplay.ApplyAutomaticScaleFromSimulation(_particleSize);
+        _particleSizeSyncedForDisplay = _particleSize;
     }
 
     private void Update()
     {
-        if (!_initialized || _paused) return;
+        if (!_initialized) return;
 
-        for (int step = 0; step < _stepsPerFrame; step++)
+        if (!_paused)
         {
-            iterator++;
-            SimulationStep();
-        }
-
-        if (_spawnEachStep && _scenario == ScenarioType.Jet)
-        {
-            _compactCounter++;
-            if (_compactCounter >= 60)
+            for (int step = 0; step < _stepsPerFrame; step++)
             {
-                _compactCounter = 0;
-                _particles.CompactParticles(_pxArr, _pyArr, _pzArr,
-                    vol_size[0], vol_size[1], vol_size[2]);
-                _particlesCount = _particles.Size;
+                iterator++;
+                SimulationStep();
+            }
+
+            if (_spawnEachStep && _scenario == ScenarioType.Jet)
+            {
+                _compactCounter++;
+                if (_compactCounter >= 60)
+                {
+                    _compactCounter = 0;
+                    _particles.CompactParticles(_pxArr, _pyArr, _pzArr,
+                        vol_size[0], vol_size[1], vol_size[2]);
+                    _particlesCount = _particles.Size;
+                }
             }
         }
 
@@ -570,9 +605,6 @@ public class SFUnifiedCS : SFBase
         }
 
         _particleBuffers.Upload(_renderPos, _renderVel, visible);
-
-        if (_particleDisplay != null)
-            _particleDisplay.scale = _particleSize * 50f;
     }
 
     #endregion
@@ -612,6 +644,7 @@ public class SFUnifiedCS : SFBase
         _nozzleRad = p.nozzleRad;
         _nParticles = p.nParticles;
         _particleSize = p.particleSize;
+        SyncParticleDisplayScaleFromSimulation();
         _stepsPerFrame = p.stepsPerFrame;
         _useLES = p.useLES;
     }
@@ -633,6 +666,7 @@ public class SFUnifiedCS : SFBase
         _boxSpawnZ = p.boxSpawnZ;
         _nParticles = p.nParticles;
         _particleSize = p.particleSize;
+        SyncParticleDisplayScaleFromSimulation();
         _stepsPerFrame = p.stepsPerFrame;
         _useLES = p.useLES;
     }
@@ -652,6 +686,7 @@ public class SFUnifiedCS : SFBase
         _boxSpawnZ = p.boxSpawnZ;
         _nParticles = p.nParticles;
         _particleSize = p.particleSize;
+        SyncParticleDisplayScaleFromSimulation();
         _stepsPerFrame = p.stepsPerFrame;
         _useLES = p.useLES;
     }
@@ -672,6 +707,7 @@ public class SFUnifiedCS : SFBase
         _boxSpawnZ = p.boxSpawnZ;
         _nParticles = p.nParticles;
         _particleSize = p.particleSize;
+        SyncParticleDisplayScaleFromSimulation();
         _stepsPerFrame = p.stepsPerFrame;
         _useLES = p.useLES;
     }
@@ -692,6 +728,7 @@ public class SFUnifiedCS : SFBase
         _boxSpawnZ = p.boxSpawnZ;
         _nParticles = p.nParticles;
         _particleSize = p.particleSize;
+        SyncParticleDisplayScaleFromSimulation();
         _stepsPerFrame = p.stepsPerFrame;
         _useLES = p.useLES;
     }
