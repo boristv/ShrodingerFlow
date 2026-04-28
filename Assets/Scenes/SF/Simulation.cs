@@ -8,9 +8,10 @@ namespace source
     {
         public readonly float[] JetVelocity = {1, 0, 0};
         
-        public float[] nozzle_cen = { (float)(2 - 1.7), (float)(1 - 0.034), (float)(1 + 0.066) }; // nozzle center
+        // Центр сопла как /obj/nozzle в example_jet.hip: t (−1.7, −0.0343367755, 0.0659939051) в системе (2,1,1)+t.
+        public float[] nozzle_cen = { 0.3f, 0.9656632f, 1.0659939f };
         public float nozzle_len = (float)0.5;                   // nozzle length
-        public float nozzle_rad = (float)0.5 ;                   // nozzle radius
+        public float nozzle_rad = 0.3f;
 
         private bool[,,] isJet;
         private float[] kvec;

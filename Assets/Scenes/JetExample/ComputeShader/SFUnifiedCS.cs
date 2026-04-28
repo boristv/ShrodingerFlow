@@ -42,9 +42,9 @@ public class SFUnifiedCS : SFBase
     [SerializeField] private Vector3 _velocity = new Vector3(-0.2f, 0f, 0f);
 
     [Header("Jet / Nozzle (Jet, SphereObstacle, CylinderObstacle)")]
-    [SerializeField] private Vector3 _nozzleCen = new Vector3(0.3f, 0.966f, 1.066f);
+    [SerializeField] private Vector3 _nozzleCen = new Vector3(0.3f, 0.9656632f, 1.0659939f);
     [SerializeField] private float _nozzleLen = 0.5f;
-    [SerializeField] private float _nozzleRad = 0.5f;
+    [SerializeField] private float _nozzleRad = 0.3f;
 
     [Header("Obstacle 1 (SphereObstacle, CylinderObstacle, TwoSpheres)")]
     [SerializeField] private Vector3 _obstaclePos1 = new Vector3(1.5f, 1f, 1f);
@@ -603,7 +603,7 @@ public class SFUnifiedCS : SFBase
     public void ApplyJetPreset(SFUnifiedJetPreset p)
     {
         vol_size = (int[])p.vol_size?.Clone() ?? new[] { 4, 2, 2 };
-        vol_res = (int[])p.vol_res?.Clone() ?? new[] { 64, 32, 32 };
+        vol_res = (int[])p.vol_res?.Clone() ?? new[] { 128, 64, 64 };
         hbar = p.hbar;
         dt = p.dt;
         _velocity = p.velocity;

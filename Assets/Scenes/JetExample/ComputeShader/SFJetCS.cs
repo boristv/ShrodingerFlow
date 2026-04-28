@@ -12,23 +12,23 @@ public class SFJetCS : SFBase
 
     [Header("Начальные условия")]
     [SerializeField] private int[] vol_size = { 4, 2, 2 };
-    [SerializeField] private int[] vol_res = { 64, 32, 32 };
-    [SerializeField] private float hbar = 0.1f;
+    [SerializeField] private int[] vol_res = { 128, 64, 64 };
+    [SerializeField] private float hbar = 0.02f;
     [SerializeField] private float dt = 1f / 48f;
 
     [SerializeField] private Vector3 jetVelocity = new Vector3(1f, 0f, 0f);
-    [SerializeField] private Vector3 nozzleCen = new Vector3(0.3f, 0.966f, 1.066f);
+    [SerializeField] private Vector3 nozzleCen = new Vector3(0.3f, 0.9656632f, 1.0659939f);
     [SerializeField] private float nozzleLen = 0.5f;
-    [SerializeField] private float nozzleRad = 0.5f;
+    [SerializeField] private float nozzleRad = 0.3f;
     [SerializeField] private int n_particles = 50;
 
     [Header("Дополнительные настройки")]
     [SerializeField] private float _particleSize = 0.05f;
-    [SerializeField] private bool _useLES = true;
+    [SerializeField] private bool _useLES = false;
 
     [Header("Скорость симуляции")]
     [SerializeField] private bool _paused;
-    [SerializeField, Range(1, 20)] private int _stepsPerFrame = 5;
+    [SerializeField, Range(1, 20)] private int _stepsPerFrame = 1;
 
     private CSISF _isf;
     private CSParticles _particles;

@@ -12,7 +12,7 @@ public class SFUnifiedScenarioPresets : ScriptableObject
     public const string DefaultAssetPath =
         "Assets/Scenes/JetExample/ComputeShader/SFUnifiedScenarioPresets.asset";
 
-    [Header("Jet — JetExampleCS.unity (SFJetCS)")]
+    [Header("Jet — как example_jet.hip (SFJetCS / Apply Scenario Defaults)")]
     public SFUnifiedJetPreset jet;
 
     [Header("SphereObstacle — как ObstacleExample.unity (SFObstacle)")]
@@ -37,20 +37,21 @@ public class SFUnifiedScenarioPresets : ScriptableObject
 
     public void FillBuiltIn()
     {
+        // Как example_jet.hip: hbar, dt, samplediv 128 на домене 4×2×2 → 128×64×64, без LES.
         jet = new SFUnifiedJetPreset
         {
             vol_size = new[] { 4, 2, 2 },
-            vol_res = new[] { 64, 32, 32 },
-            hbar = 0.1f,
+            vol_res = new[] { 128, 64, 64 },
+            hbar = 0.02f,
             dt = 1f / 48f,
             velocity = new Vector3(1f, 0f, 0f),
-            nozzleCen = new Vector3(0.3f, 0.966f, 1.066f),
+            nozzleCen = new Vector3(0.3f, 0.9656632f, 1.0659939f),
             nozzleLen = 0.5f,
-            nozzleRad = 0.5f,
+            nozzleRad = 0.3f,
             nParticles = 50,
             particleSize = 0.05f,
             stepsPerFrame = 1,
-            useLES = true
+            useLES = false
         };
 
         // Как ObstacleExample (SFObstacle): vol/hbar/dt/фон/сопло/боксы.

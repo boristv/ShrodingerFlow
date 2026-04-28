@@ -15,15 +15,15 @@ public class SFJet : SFBase
     //PARAMETERS
     [Header("Начальные условия")]
     [SerializeField, Tooltip("Box size")] private int[] vol_size = { 4, 2, 2 };      // box size
-    [SerializeField, Tooltip("Volume resolution")] private int[] vol_res = { 64, 32, 32 };    // volume resolution
-    [SerializeField, Tooltip("Planck constant")] private float hbar = (float)0.1;           // Planck constant
+    [SerializeField, Tooltip("Volume resolution")] private int[] vol_res = { 128, 64, 64 };
+    [SerializeField, Tooltip("Planck constant")] private float hbar = 0.02f;
     [SerializeField, Tooltip("Time step")] private float dt = 1 / (float)48;          // time step
     int tmax = 50;
 
     [SerializeField] private Vector3 jetVelocity = new Vector3(1f, 0f, 0f);
-    [SerializeField] private Vector3 nozzleCen = new Vector3(2 - 1.7f, 1 - 0.034f, 1 + 0.066f);
+    [SerializeField] private Vector3 nozzleCen = new Vector3(0.3f, 0.9656632f, 1.0659939f);
     [SerializeField] private float nozzleLen = 0.5f;
-    [SerializeField] private float nozzleRad = 0.5f;
+    [SerializeField] private float nozzleRad = 0.3f;
 
     [SerializeField, Tooltip("Particles count")] private int n_particles = 50;
 

@@ -164,7 +164,7 @@ MonoBehaviour:
   jetVelocity: {x: 1, y: 0, z: 0}
   nozzleCen: {x: 0.3, y: 0.966, z: 1.066}
   nozzleLen: 0.5
-  nozzleRad: 0.5
+  nozzleRad: 0.3
   n_particles: 50
   _particleSize: 0.05
   _useLES: 1
