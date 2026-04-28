@@ -17,7 +17,7 @@ Shader "Fluid/Raymarching"
         Pass
         {
             Name "PsiRaymarchVolume"
-            Tags { "LightMode" = "UniversalForwardOnly" }
+            Tags { "LightMode" = "UniversalForward" }
 
             ZWrite Off
             ZTest Always
@@ -31,6 +31,8 @@ Shader "Fluid/Raymarching"
             #pragma exclude_renderers gles2 gles3
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/ShaderVariablesFunctions.hlsl"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareOpaqueTexture.hlsl"
 
             TEXTURE3D(_DensityMap);
             SAMPLER(sampler_DensityMap);
@@ -44,11 +46,23 @@ Shader "Fluid/Raymarching"
             float3 boundsSize;
             float3 volumeMin;
             float volumeValueOffset;
-            float densityMultiplier;
+
+            float _DensityGamma;
+            float _OpticalDensity;
+            float _Absorption;
+            float _ScatterAmbient;
+            float _ScatterSun;
+            float _SunPhasePower;
+            float3 _FluidAmbient;
+            float3 _FluidSunTint;
+
             float viewMarchStepSize;
-            float3 extinctionCoeff;
             float3 dirToSun;
             float _RayDebugHitBounds;
+            float _RaymarchDebugForceOutput;
+
+            // Разрешение 3D-текстуры плотности (для texel Load без линейной фильтрации).
+            float4 _DensityRes;
 
             struct Attributes
             {
@@ -86,6 +100,26 @@ Shader "Fluid/Raymarching"
                 return float2(dstToBox, dstInsideBox);
             }
 
+            float SampleDensityVoxel(float3 uvw)
+            {
+                float3 dim = float3(max(_DensityRes.x, 1), max(_DensityRes.y, 1), max(_DensityRes.z, 1));
+                float3 u = saturate(uvw);
+                float3 t = u * dim - 1e-4;
+                float3 hi = dim - float3(1, 1, 1);
+                int3 ijk = int3(clamp(floor(t), float3(0, 0, 0), hi));
+                return LOAD_TEXTURE3D_LOD(_DensityMap, ijk, 0).r;
+            }
+
+            half3 ACESFilm(half3 x)
+            {
+                half a = 2.51h;
+                half b = 0.03h;
+                half c = 2.43h;
+                half d = 0.59h;
+                half e = 0.14h;
+                return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
+            }
+
             float3 SampleSky(float3 dir)
             {
                 const float3 colGround = float3(0.35, 0.3, 0.35) * 0.53;
@@ -102,6 +136,14 @@ Shader "Fluid/Raymarching"
 
             half4 Frag(Varyings i) : SV_Target
             {
+                if (_RaymarchDebugForceOutput > 1.5)
+                    return half4(1, 0, 1, 1);
+                if (_RaymarchDebugForceOutput > 0.5)
+                    return half4(0, 1, 0, 1);
+
+                float2 sceneUv = GetNormalizedScreenSpaceUV(i.positionCS);
+                float3 bgScene = SampleSceneColor(sceneUv);
+
                 float2 uv = i.uv;
 #if UNITY_UV_STARTS_AT_TOP
                 uv.y = 1.0 - uv.y;
@@ -114,7 +156,7 @@ Shader "Fluid/Raymarching"
 
                 float2 bd = RayBoxDst(volumeMin, volumeMin + boundsSize, rayPos, rayDir);
                 if (bd.y <= 1e-6)
-                    return half4(SampleSky(rayDir), 1);
+                    return half4(bgScene, 1);
 
                 if (_RayDebugHitBounds > 0.5)
                     return half4(1, 0, 1, 1);
@@ -125,8 +167,7 @@ Shader "Fluid/Raymarching"
 
                 float3 scattered = 0;
                 float transmittance = 1.0;
-                float sigmaScale = densityMultiplier;
-                float absScale = dot(extinctionCoeff, float3(0.33333333, 0.33333333, 0.33333333)) * 0.02;
+                float maxRho = 0;
 
                 uint iter = 0;
                 while (distAlong < marchLen && iter < 512)
@@ -136,19 +177,35 @@ Shader "Fluid/Raymarching"
 
                     if (all(uvw >= 0) && all(uvw <= 1))
                     {
-                        float rho = SAMPLE_TEXTURE3D_LOD(_DensityMap, sampler_DensityMap, saturate(uvw), 0).r - volumeValueOffset;
-                        float sigma = max(0, rho) * sigmaScale;
-                        float3 emission = sigma * float3(0.35, 0.72, 1.0) * 4.0;
-                        scattered += transmittance * emission * step;
-                        transmittance *= exp(-sigma * absScale * step);
+                        float rhoRaw = SampleDensityVoxel(uvw) - volumeValueOffset;
+                        rhoRaw = max(rhoRaw, 0);
+                        float rho = pow(saturate(rhoRaw), max(_DensityGamma, 0.01));
+                        maxRho = max(maxRho, rho);
+
+                        // Ниже порога не считаем σ — иначе ∫ даёт серый туман по всему силуэту коробки.
+                        if (rho < 0.000015)
+                            rho = 0;
+
+                        float sigma = rho * max(_OpticalDensity, 0);
+
+                        float sunScatter = pow(max(0.0, dot(dirToSun, -rayDir)), max(_SunPhasePower, 0.01));
+                        float3 Li = _FluidAmbient * _ScatterAmbient + _FluidSunTint * (_ScatterSun * sunScatter);
+                        float3 emissive = sigma * Li;
+
+                        scattered += transmittance * emissive * step;
+                        transmittance *= exp(-sigma * max(_Absorption, 0) * step);
                     }
 
                     distAlong += step;
                     iter++;
                 }
 
-                float3 bg = SampleSky(rayDir);
-                float3 rgb = scattered + bg * saturate(transmittance);
+                if (maxRho < 0.00002)
+                    return half4(bgScene, 1);
+
+                // Фон — уже отрендеренное небо/земля из _CameraOpaqueTexture, не аналитический SampleSky (иначе серый контур).
+                float3 rgb = scattered + bgScene * saturate(transmittance);
+                rgb = ACESFilm(rgb);
                 return half4(rgb, 1);
             }
             ENDHLSL

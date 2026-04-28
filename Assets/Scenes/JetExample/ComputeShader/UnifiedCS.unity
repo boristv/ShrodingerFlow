@@ -265,13 +265,20 @@ MonoBehaviour:
   raymarchDensitySource: 1
   psiDensityToVolume: {fileID: 7200000, guid: 0c4c6524fcf59422f9d8eb76ac53d6c4, type: 3}
   particlesToDensityVolume: {fileID: 7200000, guid: f4e3d2c1b0a9876543210fedcba98765, type: 3}
+  _splatterSigmaCells: 1.35
+  _splatterWeightFixed: 65000
   _raymarchSunLight: {fileID: 797636674}
-  _raymarchDensityOffset: 200
-  _raymarchDensityMultiplier: 0.05
-  _raymarchStepSize: 0.02
-  _raymarchLightStepSize: 0.1
-  _raymarchNumRefractions: 4
-  _raymarchExtinctionCoeff: {x: 30, y: 5, z: 1.02}
+  _raymarchDensityGamma: 0.55
+  _raymarchOpticalDensity: 11
+  _raymarchAbsorption: 0.42
+  _raymarchScatterAmbient: 0.24
+  _raymarchScatterSun: 1.2
+  _raymarchSunPhasePower: 2.2
+  _fluidAmbient: {r: 0.1, g: 0.22, b: 0.38, a: 1}
+  _fluidSunTint: {r: 0.52, g: 0.78, b: 1, a: 1}
+  _raymarchDensityOffset: 5e-08
+  _raymarchStepSize: 0.018
+  _raymarchDebugTintWhenRayHitsBounds: 0
 --- !u!1 &694193781
 GameObject:
   m_ObjectHideFlags: 0

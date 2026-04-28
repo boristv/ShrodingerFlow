@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 
 namespace ShrodingerFlow.Particles
 {
@@ -53,19 +54,49 @@ namespace ShrodingerFlow.Particles
         public ComputeShader psiDensityToVolume;
         [Tooltip("ParticlesToDensityVolume — сплаты частиц в объём (режим «Частицы»).")]
         public ComputeShader particlesToDensityVolume;
-        [SerializeField] float _splatterSigmaCells = 1.25f;
-        [SerializeField] uint _splatterWeightFixed = 80000;
-        [SerializeField] float _splatterDenomPerParticle = 200000f;
-        [SerializeField] float _particleSplatterDensityMultiplier = 22f;
+        [SerializeField, Tooltip("Радиус сплата в ячейках сетки (режим «Частицы»).")]
+        float _splatterSigmaCells = 1.35f;
+        [SerializeField, Tooltip("Вес одного сплата (чем больше — ярче объём). Доля нормализации считается автоматически.")]
+        uint _splatterWeightFixed = 65000;
+
         [SerializeField] Light _raymarchSunLight;
-        [SerializeField] float _raymarchDensityOffset = 5e-8f;
-        [SerializeField] float _raymarchDensityMultiplier = 2500f;
-        [SerializeField] float _raymarchStepSize = 0.02f;
-        [SerializeField] float _raymarchLightStepSize = 0.4f;
-        [SerializeField] int _raymarchNumRefractions = 4;
-        [SerializeField] Vector3 _raymarchExtinctionCoeff = new Vector3(2f, 3f, 4f);
+
+        [Header("Raymarch — вид (одна кривая плотности + свет)")]
+        [SerializeField, Tooltip("Гамма на сырую плотность: ниже 1 — мягче края, выше 1 — контрастнее.")]
+        float _raymarchDensityGamma = 0.55f;
+        [SerializeField, Tooltip("Общая «толщина» объёма по освещению (начни с 6–14).")]
+        float _raymarchOpticalDensity = 11f;
+        [SerializeField, Tooltip("Поглощение по лучу (Beer–Lambert). Выше — темнее силуэт.")]
+        float _raymarchAbsorption = 0.42f;
+        [SerializeField, Range(0f, 2f), Tooltip("Равномерное рассеяние (подсветка изнутри).")]
+        float _raymarchScatterAmbient = 0.24f;
+        [SerializeField, Range(0f, 3f), Tooltip("Рассеяние к направлению солнца.")]
+        float _raymarchScatterSun = 1.2f;
+        [SerializeField, Tooltip("Резкость блика по солнцу.")]
+        float _raymarchSunPhasePower = 2.2f;
+        [SerializeField] Color _fluidAmbient = new Color(0.1f, 0.22f, 0.38f);
+        [SerializeField] Color _fluidSunTint = new Color(0.52f, 0.78f, 1f);
+
+        [Header("Raymarch — ψ только")]
+        [SerializeField, Tooltip("Вычитается из ρ только для режима «Вероятность |ψ|²».")]
+        float _raymarchDensityOffset = 5e-8f;
+
+        [Header("Raymarch — шаг луча")]
+        [SerializeField] float _raymarchStepSize = 0.018f;
         [SerializeField, Tooltip("Отладка: весь экран сиреневый, если луч пересёк объём. Выключи — будет обычный реймарш по плотности.")]
         bool _raymarchDebugTintWhenRayHitsBounds;
+
+        public enum RaymarchDebugShaderOutput
+        {
+            Normal = 0,
+            [InspectorName("DEBUG: весь экран зелёный")]
+            SolidGreen = 1,
+            [InspectorName("DEBUG: весь экран пурпурный")]
+            SolidMagenta = 2
+        }
+
+        [SerializeField, Tooltip("Проверка: если при SolidGreen/SolidMagenta экран не меняется — отрисовка идёт не этим материалом/не тем проходом URP.")]
+        RaymarchDebugShaderOutput _raymarchDebugShaderOutput;
 
         Mesh _mesh;
         Material _mat;
@@ -88,6 +119,7 @@ namespace ShrodingerFlow.Particles
         internal static Mesh SharedFullscreenTriangleMesh => CreateFullscreenTriangleMesh();
         static readonly int ColourMapId = Shader.PropertyToID("_ColourMap");
         static readonly int RayDebugHitBoundsId = Shader.PropertyToID("_RayDebugHitBounds");
+        static readonly int RaymarchDebugForceOutputId = Shader.PropertyToID("_RaymarchDebugForceOutput");
 
         const string PsiDensityKernel = "PsiToDensity";
 
@@ -249,7 +281,7 @@ namespace ShrodingerFlow.Particles
                 psiDensityToVolume.Dispatch(k, gx, gy, gz);
             }
 
-            ApplyRaymarchUniforms(cam, volumeMinWorld, volumeSizeWorld, splats);
+            ApplyRaymarchUniforms(cam, volumeMinWorld, volumeSizeWorld, splats, rx, ry, rz);
             return true;
         }
 
@@ -280,7 +312,7 @@ namespace ShrodingerFlow.Particles
             cs.SetFloat("_SplatSigmaCells", _splatterSigmaCells);
             cs.SetInt("_SplatWeightFixed", (int)_splatterWeightFixed);
 
-            float denom = Mathf.Max(500f, buffers.ActiveCount * _splatterDenomPerParticle);
+            float denom = Mathf.Max(400f, buffers.ActiveCount * _splatterWeightFixed * 0.22f);
             cs.SetFloat("_ScratchDenom", denom);
 
             cs.Dispatch(kSplat, Mathf.Max(1, (buffers.ActiveCount + 255) / 256), 1, 1);
@@ -351,7 +383,8 @@ namespace ShrodingerFlow.Particles
                 enableRandomWrite = true,
                 msaaSamples = 1
             };
-            _densityVolumeRt = new RenderTexture(desc) { name = "PsiDensityVolume3D", filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp };
+            // Point: билinear смешивает 0 и облако → серое поле по всей коробке симуляции (не лечится множителями в шейдере).
+            _densityVolumeRt = new RenderTexture(desc) { name = "PsiDensityVolume3D", filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
             _densityVolumeRt.Create();
         }
 
@@ -369,8 +402,12 @@ namespace ShrodingerFlow.Particles
             _densityVolRx = -1;
         }
 
-        void ApplyRaymarchUniforms(Camera cam, Vector3 volumeMinWorld, Vector3 volumeSizeWorld, bool particleSplats)
+        void ApplyRaymarchUniforms(Camera cam, Vector3 volumeMinWorld, Vector3 volumeSizeWorld, bool particleSplats,
+            int resX, int resY, int resZ)
         {
+            if (_raymarchMat.shader != shaderRaymarch && shaderRaymarch != null)
+                _raymarchMat.shader = shaderRaymarch;
+
             Vector3 cp = cam.transform.position;
             _raymarchMat.SetVector("_RayWorldSpaceCameraPos", new Vector4(cp.x, cp.y, cp.z, 1f));
 
@@ -385,17 +422,29 @@ namespace ShrodingerFlow.Particles
             _raymarchMat.SetVector("_RayViewport_TR", new Vector4(tr.x, tr.y, tr.z, 0f));
 
             _raymarchMat.SetTexture("_DensityMap", _densityVolumeRt);
+            // Обязательно разрешение текущего ψ/volume — иначе в шейдере dim=(1,1,1) и все точки читают один воксель → серый прямоугольник.
+            _raymarchMat.SetVector("_DensityRes",
+                new Vector4(Mathf.Max(1, resX), Mathf.Max(1, resY), Mathf.Max(1, resZ), 0f));
             _raymarchMat.SetVector("boundsSize", volumeSizeWorld);
             _raymarchMat.SetVector("volumeMin", volumeMinWorld);
             _raymarchMat.SetFloat("volumeValueOffset", particleSplats ? 0f : _raymarchDensityOffset);
-            float densityMul = particleSplats ? _particleSplatterDensityMultiplier : (_raymarchDensityMultiplier / 1000f);
-            _raymarchMat.SetFloat("densityMultiplier", densityMul);
+
+            float optical = _raymarchOpticalDensity * (particleSplats ? 1f : 0.35f);
+            _raymarchMat.SetFloat("_DensityGamma", _raymarchDensityGamma);
+            _raymarchMat.SetFloat("_OpticalDensity", optical);
+            _raymarchMat.SetFloat("_Absorption", _raymarchAbsorption);
+            _raymarchMat.SetFloat("_ScatterAmbient", _raymarchScatterAmbient);
+            _raymarchMat.SetFloat("_ScatterSun", _raymarchScatterSun);
+            _raymarchMat.SetFloat("_SunPhasePower", _raymarchSunPhasePower);
+            _raymarchMat.SetVector("_FluidAmbient", new Vector4(_fluidAmbient.r, _fluidAmbient.g, _fluidAmbient.b, 1f));
+            _raymarchMat.SetVector("_FluidSunTint", new Vector4(_fluidSunTint.r, _fluidSunTint.g, _fluidSunTint.b, 1f));
+
             _raymarchMat.SetFloat("viewMarchStepSize", _raymarchStepSize);
-            _raymarchMat.SetVector("extinctionCoeff", _raymarchExtinctionCoeff);
 
             Vector3 sunDir = ResolveRaymarchSunDirection();
             _raymarchMat.SetVector("dirToSun", sunDir);
             _raymarchMat.SetFloat(RayDebugHitBoundsId, _raymarchDebugTintWhenRayHitsBounds ? 1f : 0f);
+            _raymarchMat.SetFloat(RaymarchDebugForceOutputId, (float)_raymarchDebugShaderOutput);
         }
 
         Vector3 ResolveRaymarchSunDirection()
@@ -427,6 +476,7 @@ namespace ShrodingerFlow.Particles
                 new Vector2(2f, 0f)
             };
             _fullscreenTriangleShared.triangles = new[] { 0, 1, 2 };
+            _fullscreenTriangleShared.RecalculateBounds();
             _fullscreenTriangleShared.UploadMeshData(true);
             return _fullscreenTriangleShared;
         }
@@ -519,10 +569,26 @@ namespace ShrodingerFlow.Particles
         {
             if (!_usesScriptableRenderPipeline)
                 return;
+            EnsureMainCameraOpaqueCopyForRaymarch();
             if (isActiveAndEnabled && mode == DisplayMode.Raymarch)
                 RaymarchFluidBridge.Register(this);
             else
                 RaymarchFluidBridge.Unregister(this);
+        }
+
+        /// <summary>
+        /// Нужно для чтения _CameraOpaqueTexture в Fluid/Raymarching (фон кадра без аналитического неба).
+        /// </summary>
+        void EnsureMainCameraOpaqueCopyForRaymarch()
+        {
+            if (!isActiveAndEnabled || mode != DisplayMode.Raymarch)
+                return;
+            var cam = Camera.main;
+            if (cam == null)
+                return;
+            var urp = cam.GetUniversalAdditionalCameraData();
+            if (urp != null)
+                urp.requiresColorTexture = true;
         }
 
         /// <summary>Выставляет <see cref="scale"/> из размера частиц симуляции (вызывается компонентом симуляции).</summary>
@@ -577,7 +643,10 @@ namespace ShrodingerFlow.Particles
             TryApplyAutomaticScaleFromSimulation();
             RefreshPipelineUsage();
             if (_usesScriptableRenderPipeline && mode == DisplayMode.Raymarch)
+            {
+                EnsureMainCameraOpaqueCopyForRaymarch();
                 RefreshRaymarchBridgeRegistration();
+            }
         }
 
         void OnDestroy()

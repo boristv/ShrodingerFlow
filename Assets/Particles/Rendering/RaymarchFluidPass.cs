@@ -44,6 +44,7 @@ namespace ShrodingerFlow.Particles
             CommandBuffer cmd = CommandBufferPool.Get(nameof(RaymarchFluidPass));
             using (new ProfilingScope(cmd, _profilingSampler))
             {
+                cmd.SetViewport(cam.pixelRect);
                 cmd.DrawMesh(mesh, Matrix4x4.identity, mat, 0);
             }
 

@@ -12,7 +12,8 @@ namespace ShrodingerFlow.Particles
 
         public override void Create()
         {
-            _pass = new RaymarchFluidPass(RenderPassEvent.AfterRenderingPostProcessing);
+            // До постобработки: иначе цвет/тонмап могут «перекрывать» или искажать полноэкранный проход.
+            _pass = new RaymarchFluidPass(RenderPassEvent.BeforeRenderingPostProcessing);
         }
 
         public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
