@@ -18,7 +18,9 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         TwoSpheres,
         LeapfrogRings,
         /// <summary>example_cigarette.hip: фон U, гравитация на ψ₂, heat по ψ₁ в сфере, граница jet ↑.</summary>
-        Cigarette
+        Cigarette,
+        /// <summary>example_ink_collision.hip / карточка Ink drop: два шара ±1, скорости ∓1 по X, границы ψ на каждом шаге.</summary>
+        InkCollision
     }
 
     [Header("Compute Shaders")]
@@ -130,7 +132,8 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         _isf.Init(_kernelsShader, _fftShader, _lesShader, vol_size, vol_res, hbar, dt);
 
         bool oneTimeParticles = _scenario == ScenarioType.LeapfrogRings
-                             || _scenario == ScenarioType.TwoSpheres;
+                             || _scenario == ScenarioType.TwoSpheres
+                             || _scenario == ScenarioType.InkCollision;
         int maxParticles = oneTimeParticles ? _nParticles : _nParticles * 1000;
 
         _particles = new CSParticles();
@@ -282,6 +285,20 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                 ComputeKvecAndOmega(_cigaretteJet);
                 RunInitBoundary(_maskBuf1, _kvecX, _kvecY, _kvecZ, 0f, 10);
                 _spawnEachStep = true;
+                _boundaryEachStep = true;
+                break;
+
+            case ScenarioType.InkCollision:
+                InitPsiUniform();
+                _maskBuf1 = BuildSphereMask(_obstaclePos1, _obstacleRadius1);
+                _maskBuf2 = BuildSphereMask(_obstaclePos2, _obstacleRadius2);
+                float ikx = _velocity.x / hbar;
+                float iky = _velocity.y / hbar;
+                float ikz = _velocity.z / hbar;
+                RunInitTwoSpheres(ikx, iky, ikz, 10);
+                ComputeKvecAndOmega(_velocity);
+                SpawnParticlesInSpheres();
+                _spawnEachStep = false;
                 _boundaryEachStep = true;
                 break;
         }
@@ -500,12 +517,22 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
 
         if (_boundaryEachStep)
         {
-            float phaseOffset = (_scenario == ScenarioType.Jet
-                                || _scenario == ScenarioType.Cigarette)
-                ? -_omega * dt * iterator
-                : 0f;
-            _isf.ApplyJetBoundary(_maskBuf1, _kvecX, _kvecY, _kvecZ, phaseOffset);
-            _isf.PressureProject();
+            if (_scenario == ScenarioType.InkCollision)
+            {
+                float phaseOffset = -_omega * dt * iterator;
+                _isf.ApplyJetBoundary(_maskBuf1, _kvecX, _kvecY, _kvecZ, phaseOffset);
+                _isf.ApplyJetBoundary(_maskBuf2, -_kvecX, -_kvecY, -_kvecZ, phaseOffset);
+                _isf.PressureProject();
+            }
+            else
+            {
+                float phaseOffset = (_scenario == ScenarioType.Jet
+                                    || _scenario == ScenarioType.Cigarette)
+                    ? -_omega * dt * iterator
+                    : 0f;
+                _isf.ApplyJetBoundary(_maskBuf1, _kvecX, _kvecY, _kvecZ, phaseOffset);
+                _isf.PressureProject();
+            }
         }
 
         if (_spawnEachStep)
@@ -806,6 +833,27 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         SyncParticleDisplayScaleFromSimulation();
     }
 
+    /// <summary>Карточка Ink drop + example_ink_collision.hip (домен 0…4, центры сфер в hip −1 и +1 по X → Unity 1 и 3 при Y,Z=2).</summary>
+    [ContextMenu("Apply Ink collision (hip card) defaults")]
+    public void ApplyInkCollisionHipDefaults()
+    {
+        _scenario = ScenarioType.InkCollision;
+        vol_size = new[] { 4, 4, 4 };
+        vol_res = new[] { 128, 128, 128 };
+        hbar = 0.02f;
+        dt = 1f / 48f;
+        _velocity = new Vector3(1f, 0f, 0f);
+        _obstaclePos1 = new Vector3(1f, 2f, 2f);
+        _obstaclePos2 = new Vector3(3f, 2f, 2f);
+        _obstacleRadius1 = 0.45f;
+        _obstacleRadius2 = 0.45f;
+        _useLES = false;
+        _stepsPerFrame = 1;
+        _nParticles = 100000;
+        _particleSize = 0.1f;
+        SyncParticleDisplayScaleFromSimulation();
+    }
+
     #endregion
 
     #region Gizmos
@@ -831,6 +879,12 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                 Gizmos.color = new Color(1, 0, 0, 0.5f);
                 Gizmos.DrawWireSphere(transform.position + _obstaclePos1, _obstacleRadius1);
                 Gizmos.color = new Color(0, 0, 1, 0.5f);
+                Gizmos.DrawWireSphere(transform.position + _obstaclePos2, _obstacleRadius2);
+                break;
+            case ScenarioType.InkCollision:
+                Gizmos.color = new Color(0.9f, 0.2f, 0.2f, 0.55f);
+                Gizmos.DrawWireSphere(transform.position + _obstaclePos1, _obstacleRadius1);
+                Gizmos.color = new Color(0.3f, 0.6f, 1f, 0.55f);
                 Gizmos.DrawWireSphere(transform.position + _obstaclePos2, _obstacleRadius2);
                 break;
             case ScenarioType.Cigarette:

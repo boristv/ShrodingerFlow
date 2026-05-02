@@ -168,6 +168,9 @@ public class SFUnifiedScenarioPresets : ScriptableObject
             case SFUnifiedCS.ScenarioType.Cigarette:
                 target.ApplyCigaretteHipDefaults();
                 break;
+            case SFUnifiedCS.ScenarioType.InkCollision:
+                target.ApplyInkCollisionHipDefaults();
+                break;
         }
     }
 }
