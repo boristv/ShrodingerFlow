@@ -158,10 +158,10 @@ MonoBehaviour:
   _particlesShader: {fileID: 7200000, guid: 2894e3a1b59434c4f8a90079f8036355, type: 3}
   _lesShader: {fileID: 7200000, guid: de57605fec55e4a0096a1b3240cc595b, type: 3}
   _scenarioPresetsOverride: {fileID: 0}
-  _scenario: 0
-  vol_size: 040000000200000002000000
-  vol_res: 800000004000000040000000
-  hbar: 0.02
+  _scenario: 5
+  vol_size: 030000000600000003000000
+  vol_res: 400000008000000040000000
+  hbar: 0.03
   dt: 0.020833334
   _velocity: {x: 1, y: 0, z: 0}
   _nozzleCen: {x: 0.3, y: 0.9656632, z: 1.0659939}
@@ -175,6 +175,11 @@ MonoBehaviour:
   _ring2Radius: 0.9
   _ring1Normal: {x: -1, y: 0, z: 0}
   _ring2Normal: {x: -1, y: 0, z: 0}
+  _cigaretteBackgroundU: {x: 0.1, y: 0, z: 0}
+  _cigaretteJet: {x: 0, y: 1, z: 0}
+  _cigaretteGravity: {x: 0, y: 1, z: 0}
+  _cigaretteHeatSphereCen: {x: 1, y: 0.5, z: 1.6127148}
+  _cigaretteHeatSphereRad: 0.2
   _nParticles: 50
   _particleSize: 0.05
   _boxSpawnX: {x: 5, y: 5}
@@ -222,7 +227,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bdfe3008efbf29745879ab1d40574478, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  mode: 3
+  mode: 2
   scale: 1
   _automaticSimulationScale: 0
   _particleSizeToScaleMultiplier: 50
@@ -264,9 +269,10 @@ MonoBehaviour:
   shaderRaymarch: {fileID: 4800000, guid: 557ee3bc7bd1ca242a49f3816e6025b5, type: 3}
   raymarchDensitySource: 1
   psiDensityToVolume: {fileID: 7200000, guid: 0c4c6524fcf59422f9d8eb76ac53d6c4, type: 3}
-  particlesToDensityVolume: {fileID: 7200000, guid: f4e3d2c1b0a9876543210fedcba98765, type: 3}
-  _splatterSigmaCells: 1.35
-  _splatterWeightFixed: 65000
+  particlesToDensityVolume: {fileID: 7200000, guid: f4e3d2c1b0a9876543210fedcba98765,
+    type: 3}
+  _splatterSigmaCells: 1.25
+  _splatterWeightFixed: 80000
   _raymarchSunLight: {fileID: 797636674}
   _raymarchDensityGamma: 0.55
   _raymarchOpticalDensity: 11
@@ -276,9 +282,10 @@ MonoBehaviour:
   _raymarchSunPhasePower: 2.2
   _fluidAmbient: {r: 0.1, g: 0.22, b: 0.38, a: 1}
   _fluidSunTint: {r: 0.52, g: 0.78, b: 1, a: 1}
-  _raymarchDensityOffset: 5e-08
-  _raymarchStepSize: 0.018
+  _raymarchDensityOffset: 200
+  _raymarchStepSize: 0.02
   _raymarchDebugTintWhenRayHitsBounds: 0
+  _raymarchDebugShaderOutput: 0
 --- !u!1 &694193781
 GameObject:
   m_ObjectHideFlags: 0
@@ -386,7 +393,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   m_RenderShadows: 1
   m_RequiresDepthTextureOption: 2
-  m_RequiresOpaqueTextureOption: 2
+  m_RequiresOpaqueTextureOption: 1
   m_CameraType: 0
   m_Cameras: []
   m_RendererIndex: -1

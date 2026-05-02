@@ -16,7 +16,9 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         SphereObstacle,
         CylinderObstacle,
         TwoSpheres,
-        LeapfrogRings
+        LeapfrogRings,
+        /// <summary>example_cigarette.hip: фон U, гравитация на ψ₂, heat по ψ₁ в сфере, граница jet ↑.</summary>
+        Cigarette
     }
 
     [Header("Compute Shaders")]
@@ -59,6 +61,17 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     [SerializeField] private float _ring2Radius = 0.9f;
     [SerializeField] private Vector3 _ring1Normal = new Vector3(-1, 0, 0);
     [SerializeField] private Vector3 _ring2Normal = new Vector3(-1, 0, 0);
+
+    [Header("Cigarette — example_cigarette.hip")]
+    [Tooltip("Фоновый поток U для начальной плоской волны (k = U/hbar).")]
+    [SerializeField] private Vector3 _cigaretteBackgroundU = new Vector3(0.1f, 0f, 0f);
+    [Tooltip("Jet для penalization на маске (в hip: 0, 1, 0).")]
+    [SerializeField] private Vector3 _cigaretteJet = new Vector3(0f, 1f, 0f);
+    [Tooltip("g: фаза на ψ₂, dot(g,P)*dt/hbar.")]
+    [SerializeField] private Vector3 _cigaretteGravity = new Vector3(0f, 1f, 0f);
+    [Tooltip("Центр сферы в координатах объёма [0..vol] (hip nozzle → Unity).")]
+    [SerializeField] private Vector3 _cigaretteHeatSphereCen = new Vector3(1f, 0.5f, 1.6127148f);
+    [SerializeField] private float _cigaretteHeatSphereRad = 0.2f;
 
     [Header("Частицы")]
     [SerializeField] private int _nParticles = 50;
@@ -177,7 +190,8 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                 SimulationStep();
             }
 
-            if (_spawnEachStep && _scenario == ScenarioType.Jet)
+            if (_spawnEachStep
+                && (_scenario == ScenarioType.Jet || _scenario == ScenarioType.Cigarette))
             {
                 _compactCounter++;
                 if (_compactCounter >= 60)
@@ -261,6 +275,15 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                 _spawnEachStep = false;
                 _boundaryEachStep = false;
                 break;
+
+            case ScenarioType.Cigarette:
+                InitPsiPlaneWave(_cigaretteBackgroundU);
+                _maskBuf1 = BuildSphereMask(_cigaretteHeatSphereCen, _cigaretteHeatSphereRad);
+                ComputeKvecAndOmega(_cigaretteJet);
+                RunInitBoundary(_maskBuf1, _kvecX, _kvecY, _kvecZ, 0f, 10);
+                _spawnEachStep = true;
+                _boundaryEachStep = true;
+                break;
         }
     }
 
@@ -285,10 +308,16 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
 
     private void InitPsiWithPhase()
     {
+        InitPsiPlaneWave(_velocity);
+    }
+
+    /// <summary>Set_background_flow из example_cigarette.hip: ψ₁=exp(i k·P), ψ₂=0.01·exp(i k·P), k=U/hbar.</summary>
+    private void InitPsiPlaneWave(Vector3 backgroundU)
+    {
         int num = _isf.num;
-        float kx = _velocity.x / hbar;
-        float ky = _velocity.y / hbar;
-        float kz = _velocity.z / hbar;
+        float kx = backgroundU.x / hbar;
+        float ky = backgroundU.y / hbar;
+        float kz = backgroundU.z / hbar;
 
         var tmp1 = new Vector2[num];
         var tmp2 = new Vector2[num];
@@ -464,11 +493,15 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
 
     private void SimulationStep()
     {
-        _isf.UpdateSpace(_useLES);
+        if (_scenario == ScenarioType.Cigarette)
+            _isf.UpdateCigaretteSpace(_useLES, _cigaretteGravity, _maskBuf1);
+        else
+            _isf.UpdateSpace(_useLES);
 
         if (_boundaryEachStep)
         {
-            float phaseOffset = (_scenario == ScenarioType.Jet)
+            float phaseOffset = (_scenario == ScenarioType.Jet
+                                || _scenario == ScenarioType.Cigarette)
                 ? -_omega * dt * iterator
                 : 0f;
             _isf.ApplyJetBoundary(_maskBuf1, _kvecX, _kvecY, _kvecZ, phaseOffset);
@@ -481,7 +514,7 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         _isf.UpdateVelocities(_vel);
         _particles.CalculateMovement(_vel);
 
-        if (_scenario != ScenarioType.Jet)
+        if (_scenario != ScenarioType.Jet && _scenario != ScenarioType.Cigarette)
             _particles.WrapPositions(vol_size[0], vol_size[1], vol_size[2]);
     }
 
@@ -504,6 +537,17 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                 zz[i] = Random.Range(_boxSpawnZ.x, _boxSpawnZ.y);
             }
         }
+        else if (_scenario == ScenarioType.Cigarette)
+        {
+            float r = 0.9f * _cigaretteHeatSphereRad;
+            for (int i = 0; i < _nParticles; i++)
+            {
+                Vector3 d = Random.onUnitSphere;
+                xx[i] = _cigaretteHeatSphereCen.x + r * d.x;
+                yy[i] = _cigaretteHeatSphereCen.y + r * d.y;
+                zz[i] = _cigaretteHeatSphereCen.z + r * d.z;
+            }
+        }
         else
         {
             for (int i = 0; i < _nParticles; i++)
@@ -515,7 +559,7 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
             }
         }
 
-        bool ring = _scenario != ScenarioType.Jet;
+        bool ring = _scenario != ScenarioType.Jet && _scenario != ScenarioType.Cigarette;
         _particles.AddParticles(xx, yy, zz, _nParticles, ring);
         _particlesCount = _particles.Size;
     }
@@ -585,7 +629,7 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
 
         var offset = transform.position;
 
-        bool cull = _scenario == ScenarioType.Jet;
+        bool cull = _scenario == ScenarioType.Jet || _scenario == ScenarioType.Cigarette;
         float maxX = vol_size[0], maxY = vol_size[1], maxZ = vol_size[2];
         float velThreshold = maxX * maxX + maxY * maxY + maxZ * maxZ;
         int visible = 0;
@@ -741,6 +785,27 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         _useLES = p.useLES;
     }
 
+    /// <summary>Параметры как в example_cigarette.hip. Задайте до входа в Play (инициализация CSISF в Start).</summary>
+    [ContextMenu("Apply Cigarette (hip) defaults")]
+    public void ApplyCigaretteHipDefaults()
+    {
+        _scenario = ScenarioType.Cigarette;
+        vol_size = new[] { 3, 6, 3 };
+        vol_res = new[] { 64, 128, 64 };
+        hbar = 0.03f;
+        dt = 1f / 48f;
+        _useLES = false;
+        _stepsPerFrame = 1;
+        _cigaretteBackgroundU = new Vector3(0.1f, 0f, 0f);
+        _cigaretteJet = new Vector3(0f, 1f, 0f);
+        _cigaretteGravity = new Vector3(0f, 1f, 0f);
+        _cigaretteHeatSphereCen = new Vector3(1f, 0.5f, 1.6127148f);
+        _cigaretteHeatSphereRad = 0.2f;
+        _nParticles = 50;
+        _particleSize = 0.05f;
+        SyncParticleDisplayScaleFromSimulation();
+    }
+
     #endregion
 
     #region Gizmos
@@ -767,6 +832,11 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                 Gizmos.DrawWireSphere(transform.position + _obstaclePos1, _obstacleRadius1);
                 Gizmos.color = new Color(0, 0, 1, 0.5f);
                 Gizmos.DrawWireSphere(transform.position + _obstaclePos2, _obstacleRadius2);
+                break;
+            case ScenarioType.Cigarette:
+                Gizmos.color = new Color(0.2f, 0.8f, 0.3f, 0.6f);
+                Gizmos.DrawWireSphere(transform.position + _cigaretteHeatSphereCen,
+                    _cigaretteHeatSphereRad);
                 break;
         }
     }

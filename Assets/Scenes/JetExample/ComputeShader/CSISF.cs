@@ -27,6 +27,7 @@ namespace ComputeShaderSF
         private int _normalizeK, _gaugeK, _shiftK, _mulEachK;
         private int _copyR2CK, _fftNormK, _velOneK;
         private int _staggeredK, _divK, _jetK;
+        private int _gravK, _heatK;
 
         public void Init(ComputeShader kernels, ComputeShader fftShader,
             ComputeShader lesShader, int[] volSize, int[] volRes, float hbar, float dt)
@@ -64,6 +65,8 @@ namespace ComputeShaderSF
             _staggeredK = kernels.FindKernel("StaggeredSharp");
             _divK = kernels.FindKernel("Div");
             _jetK = kernels.FindKernel("ApplyJetBoundary");
+            _gravK = kernels.FindKernel("GravityPsi2");
+            _heatK = kernels.FindKernel("HeatSinkPsi1");
 
             psi1 = new ComputeBuffer(num, sizeof(float) * 2);
             psi2 = new ComputeBuffer(num, sizeof(float) * 2);
@@ -318,6 +321,52 @@ namespace ComputeShaderSF
                 PressureProject(_velCurrent);
             else
                 PressureProject();
+        }
+
+        /// <summary>
+        /// Цепочка как в example_cigarette.hip (DOP): после Шрёдингера — нормировка, фаза g·P на ψ₂,
+        /// давление, обнуление ψ₁ в маске «сигареты», снова нормировка и второй PP.
+        /// </summary>
+        public void UpdateCigaretteSpace(bool useLES, Vector3 gravityG, ComputeBuffer isJetMask)
+        {
+            SetCommonUniforms();
+            SchoedingerFlow();
+            if (useLES)
+                LESStep();
+            Normalize();
+            ApplyGravityPsi2(gravityG);
+            if (useLES)
+                PressureProject(_velCurrent);
+            else
+                PressureProject();
+            ApplyHeatSinkPsi1(isJetMask);
+            Normalize();
+            if (useLES)
+                PressureProject(_velCurrent);
+            else
+                PressureProject();
+        }
+
+        private void ApplyGravityPsi2(Vector3 g)
+        {
+            SetCommonUniforms();
+            _kernels.SetFloat("_GX", g.x);
+            _kernels.SetFloat("_GY", g.y);
+            _kernels.SetFloat("_GZ", g.z);
+            _kernels.SetFloat("_DT", dt);
+            _kernels.SetBuffer(_gravK, "_Psi2", psi2);
+            _kernels.SetBuffer(_gravK, "_PX", _px);
+            _kernels.SetBuffer(_gravK, "_PY", _py);
+            _kernels.SetBuffer(_gravK, "_PZ", _pz);
+            _kernels.Dispatch(_gravK, Groups1D, 1, 1);
+        }
+
+        private void ApplyHeatSinkPsi1(ComputeBuffer isJet)
+        {
+            SetCommonUniforms();
+            _kernels.SetBuffer(_heatK, "_Psi1", psi1);
+            _kernels.SetBuffer(_heatK, "_IsJet", isJet);
+            _kernels.Dispatch(_heatK, Groups1D, 1, 1);
         }
 
         public void UpdateVelocities(CSVelocity vel)

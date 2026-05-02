@@ -8,6 +8,8 @@
 #pragma kernel StaggeredSharp
 #pragma kernel Div
 #pragma kernel ApplyJetBoundary
+#pragma kernel GravityPsi2
+#pragma kernel HeatSinkPsi1
 
 RWStructuredBuffer<float2> _Psi1;
 RWStructuredBuffer<float2> _Psi2;
@@ -35,6 +37,10 @@ float _KVecX;
 float _KVecY;
 float _KVecZ;
 float _PhaseOffset;
+float _GX;
+float _GY;
+float _GZ;
+float _DT;
 
 float2 cmul(float2 a, float2 b)
 {
@@ -218,4 +224,24 @@ void ApplyJetBoundary(uint3 id : SV_DispatchThreadID)
     float2 expPhase = float2(cos(phase), sin(phase));
     _Psi1[i] = amp1 * expPhase;
     _Psi2[i] = amp2 * expPhase;
+}
+
+[numthreads(256, 1, 1)]
+void GravityPsi2(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    float phase = (_GX * _PX[i] + _GY * _PY[i] + _GZ * _PZ[i]) * _DT / _Hbar;
+    float2 rot = float2(cos(phase), sin(phase));
+    _Psi2[i] = cmul(_Psi2[i], rot);
+}
+
+[numthreads(256, 1, 1)]
+void HeatSinkPsi1(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+    if (_IsJet[i] == 0) return;
+    _Psi1[i] = float2(0, 0);
 }

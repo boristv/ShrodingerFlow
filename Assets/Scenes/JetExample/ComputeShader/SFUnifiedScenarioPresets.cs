@@ -165,6 +165,9 @@ public class SFUnifiedScenarioPresets : ScriptableObject
             case SFUnifiedCS.ScenarioType.LeapfrogRings:
                 target.ApplyLeapfrogRingsPreset(leapfrogRings);
                 break;
+            case SFUnifiedCS.ScenarioType.Cigarette:
+                target.ApplyCigaretteHipDefaults();
+                break;
         }
     }
 }
