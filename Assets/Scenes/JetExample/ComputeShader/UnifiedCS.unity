@@ -158,12 +158,12 @@ MonoBehaviour:
   _particlesShader: {fileID: 7200000, guid: 2894e3a1b59434c4f8a90079f8036355, type: 3}
   _lesShader: {fileID: 7200000, guid: de57605fec55e4a0096a1b3240cc595b, type: 3}
   _scenarioPresetsOverride: {fileID: 0}
-  _scenario: 6
-  vol_size: 040000000400000004000000
-  vol_res: 800000008000000080000000
-  hbar: 0.02
-  dt: 0.020833334
-  _velocity: {x: 1, y: 0, z: 0}
+  _scenario: 7
+  vol_size: 050000000500000005000000
+  vol_res: 400000004000000040000000
+  hbar: 0.05
+  dt: 0.041666668
+  _velocity: {x: 0, y: 0, z: 0}
   _nozzleCen: {x: 0.3, y: 0.9656632, z: 1.0659939}
   _nozzleLen: 0.5
   _nozzleRad: 0.3
@@ -175,14 +175,20 @@ MonoBehaviour:
   _ring2Radius: 0.9
   _ring1Normal: {x: -1, y: 0, z: 0}
   _ring2Normal: {x: -1, y: 0, z: 0}
+  _obliqueRing1Center: {x: 2.5, y: 1.7928932, z: 1.7928932}
+  _obliqueRing1Normal: {x: 0, y: 0.70710677, z: 0.70710677}
+  _obliqueRing2Center: {x: 1.7928932, y: 2.5, z: 1.7928932}
+  _obliqueRing2Normal: {x: 0.70710677, y: 0, z: 0.70710677}
+  _obliqueRingRadius: 0.6
+  _obliquePsi2Re: 0.05
   _cigaretteBackgroundU: {x: 0.1, y: 0, z: 0}
   _cigaretteJet: {x: 0, y: 1, z: 0}
   _cigaretteGravity: {x: 0, y: 1, z: 0}
   _cigaretteHeatSphereCen: {x: 1, y: 0.5, z: 1.6127148}
   _cigaretteHeatSphereRad: 0.2
   _nParticles: 100000
-  _particleSize: 0.1
-  _boxSpawnX: {x: 5, y: 5}
+  _particleSize: 0.08
+  _boxSpawnX: {x: 0.5, y: 4.5}
   _boxSpawnY: {x: 0.5, y: 4.5}
   _boxSpawnZ: {x: 0.5, y: 4.5}
   _useLES: 0

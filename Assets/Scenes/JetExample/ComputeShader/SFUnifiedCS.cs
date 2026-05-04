@@ -20,7 +20,9 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         /// <summary>example_cigarette.hip: фон U, гравитация на ψ₂, heat по ψ₁ в сфере, граница jet ↑.</summary>
         Cigarette,
         /// <summary>example_ink_collision.hip / карточка Ink drop: два шара ±1, скорости ∓1 по X, границы ψ на каждом шаге.</summary>
-        InkCollision
+        InkCollision,
+        /// <summary>Вид сверху (XZ): кольцо слева, нормаль +X; кольцо с большой Z, нормаль −Z; плоскости перпендикулярны, встреча в центре объёма.</summary>
+        ObliqueRingCollision
     }
 
     [Header("Compute Shaders")]
@@ -63,6 +65,16 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     [SerializeField] private float _ring2Radius = 0.9f;
     [SerializeField] private Vector3 _ring1Normal = new Vector3(-1, 0, 0);
     [SerializeField] private Vector3 _ring2Normal = new Vector3(-1, 0, 0);
+
+    [Header("Oblique rings — вид сверху XZ: слева → +X, сверху (+Z) → −Z, центр объёма")]
+    [Tooltip("AddCircle: ось вдоль нормали; перенос вихря — против +n, поэтому заданы −X и +Z, чтобы полёт был к центру (+X и −Z).")]
+    [SerializeField] private Vector3 _obliqueRing1Center = new Vector3(1.4f, 2.5f, 2.5f);
+    [SerializeField] private Vector3 _obliqueRing1Normal = new Vector3(-1f, 0f, 0f);
+    [SerializeField] private Vector3 _obliqueRing2Center = new Vector3(2.5f, 2.5f, 3.6f);
+    [SerializeField] private Vector3 _obliqueRing2Normal = new Vector3(0f, 0f, 1f);
+    [Tooltip("Радиус трубки в AddCircle (расстояние от оси center+n), не «большой» радиус тора.")]
+    [SerializeField] private float _obliqueRingRadius = 0.6f;
+    [SerializeField] private float _obliquePsi2Re = 0.05f;
 
     [Header("Cigarette — example_cigarette.hip")]
     [Tooltip("Фоновый поток U для начальной плоской волны (k = U/hbar).")]
@@ -132,6 +144,7 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         _isf.Init(_kernelsShader, _fftShader, _lesShader, vol_size, vol_res, hbar, dt);
 
         bool oneTimeParticles = _scenario == ScenarioType.LeapfrogRings
+                             || _scenario == ScenarioType.ObliqueRingCollision
                              || _scenario == ScenarioType.TwoSpheres
                              || _scenario == ScenarioType.InkCollision;
         int maxParticles = oneTimeParticles ? _nParticles : _nParticles * 1000;
@@ -279,6 +292,16 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                 _boundaryEachStep = false;
                 break;
 
+            case ScenarioType.ObliqueRingCollision:
+                InitPsiObliqueRingsHip();
+                _isf.Normalize();
+                _isf.PressureProject();
+                SpawnParticlesOnObliqueRings(_nParticles);
+                _particlesCount = _particles.Size;
+                _spawnEachStep = false;
+                _boundaryEachStep = false;
+                break;
+
             case ScenarioType.Cigarette:
                 InitPsiPlaneWave(_cigaretteBackgroundU);
                 _maskBuf1 = BuildSphereMask(_cigaretteHeatSphereCen, _cigaretteHeatSphereRad);
@@ -372,6 +395,26 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
 
         AddCircle(tmp1, center, _ring1Normal, _ring1Radius, d);
         AddCircle(tmp1, center, _ring2Normal, _ring2Radius, d);
+
+        _isf.psi1.SetData(tmp1);
+        _isf.psi2.SetData(tmp2);
+    }
+
+    /// <summary>Set_Constant_One + Add_Vortex_Ring1/2 + Add_small_second_component из example_oblique_collision.hip (без фоновой exp(ik·P)).</summary>
+    private void InitPsiObliqueRingsHip()
+    {
+        int num = _isf.num;
+        var tmp1 = new Vector2[num];
+        var tmp2 = new Vector2[num];
+        for (int i = 0; i < num; i++)
+        {
+            tmp1[i] = new Vector2(1f, 0f);
+            tmp2[i] = new Vector2(_obliquePsi2Re, 0f);
+        }
+
+        float d = _isf.dx * 5f;
+        AddCircle(tmp1, _obliqueRing1Center, _obliqueRing1Normal, _obliqueRingRadius, d);
+        AddCircle(tmp1, _obliqueRing2Center, _obliqueRing2Normal, _obliqueRingRadius, d);
 
         _isf.psi1.SetData(tmp1);
         _isf.psi2.SetData(tmp2);
@@ -604,6 +647,50 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         }
         _particles.AddParticles(xx, yy, zz, count);
         _particlesCount = _particles.Size;
+    }
+
+    /// <summary>Частицы у двух вихрей как у <see cref="AddCircle"/>: цилиндрическая трубка вдоль нормали (радиус = tube, длина ≈ <see cref="InitPsiObliqueRingsHip"/> d = 5·dx), а не окружность в одной плоскости.</summary>
+    private void SpawnParticlesOnObliqueRings(int count)
+    {
+        if (count <= 0) return;
+        var xx = new float[count];
+        var yy = new float[count];
+        var zz = new float[count];
+        int half = count / 2;
+        float d = _isf.dx * 5f;
+        float halfAxial = d * 0.48f;
+        float tubeR = _obliqueRingRadius;
+        float jitter = _isf.dx * 0.6f;
+        FillAddCircleVortexTube(xx, yy, zz, 0, half,
+            _obliqueRing1Center, _obliqueRing1Normal, tubeR, halfAxial, jitter);
+        FillAddCircleVortexTube(xx, yy, zz, half, count,
+            _obliqueRing2Center, _obliqueRing2Normal, tubeR, halfAxial, jitter);
+        _particles.AddParticles(xx, yy, zz, count);
+        _particlesCount = _particles.Size;
+    }
+
+    /// <summary>Соответствует ядру AddCircle: ось center + s·n, |s|≤halfAxial; сечение — круг радиуса tubeRadius в плоскости ⊥ n.</summary>
+    private static void FillAddCircleVortexTube(float[] xx, float[] yy, float[] zz,
+        int from, int to, Vector3 center, Vector3 normal, float tubeRadius, float halfAxial, float jitter)
+    {
+        Vector3 n = normal.normalized;
+        Vector3 aux = Mathf.Abs(n.y) < 0.99f ? Vector3.up : Vector3.right;
+        Vector3 e1 = Vector3.Cross(aux, n);
+        if (e1.sqrMagnitude < 1e-8f)
+            e1 = Vector3.Cross(Vector3.forward, n);
+        e1.Normalize();
+        Vector3 e2 = Vector3.Cross(n, e1);
+        for (int i = from; i < to; i++)
+        {
+            float s = Random.Range(-halfAxial, halfAxial);
+            float t = Random.Range(0f, 2f * Mathf.PI);
+            Vector3 p = center + s * n + tubeRadius * (Mathf.Cos(t) * e1 + Mathf.Sin(t) * e2);
+            if (jitter > 0f)
+                p += Random.insideUnitSphere * jitter;
+            xx[i] = p.x;
+            yy[i] = p.y;
+            zz[i] = p.z;
+        }
     }
 
     private void SpawnParticlesInSpheres()
@@ -854,6 +941,34 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         SyncParticleDisplayScaleFromSimulation();
     }
 
+    /// <summary>Карточка 5³, hbar 0.05, 64³, dt 1/24, r=0.6. Схема сверху: слева ось +X, сверху по Z ось −Z, центры C−approach·n.</summary>
+    [ContextMenu("Apply Oblique ring collision (hip card) defaults")]
+    public void ApplyObliqueRingCollisionHipDefaults()
+    {
+        _scenario = ScenarioType.ObliqueRingCollision;
+        vol_size = new[] { 5, 5, 5 };
+        vol_res = new[] { 64, 64, 64 };
+        hbar = 0.05f;
+        dt = 1f / 24f;
+        _velocity = Vector3.zero;
+        float m = Mathf.Min(vol_size[0], vol_size[1], vol_size[2]);
+        float approach = m * 0.22f;
+        var C = new Vector3(vol_size[0] * 0.5f, vol_size[1] * 0.5f, vol_size[2] * 0.5f);
+        var nFromLeft = new Vector3(-1f, 0f, 0f);
+        var nFromHighZ = new Vector3(0f, 0f, 1f);
+        _obliqueRing1Center = C - approach * new Vector3(1f, 0f, 0f);
+        _obliqueRing1Normal = nFromLeft;
+        _obliqueRing2Center = C + approach * new Vector3(0f, 0f, 1f);
+        _obliqueRing2Normal = nFromHighZ;
+        _obliqueRingRadius = 0.6f;
+        _obliquePsi2Re = 0.05f;
+        _useLES = false;
+        _stepsPerFrame = 1;
+        _nParticles = 100000;
+        _particleSize = 0.08f;
+        SyncParticleDisplayScaleFromSimulation();
+    }
+
     #endregion
 
     #region Gizmos
@@ -886,6 +1001,12 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                 Gizmos.DrawWireSphere(transform.position + _obstaclePos1, _obstacleRadius1);
                 Gizmos.color = new Color(0.3f, 0.6f, 1f, 0.55f);
                 Gizmos.DrawWireSphere(transform.position + _obstaclePos2, _obstacleRadius2);
+                break;
+            case ScenarioType.ObliqueRingCollision:
+                Gizmos.color = new Color(0.95f, 0.25f, 0.2f, 0.65f);
+                Gizmos.DrawWireSphere(transform.position + _obliqueRing1Center, _obliqueRingRadius);
+                Gizmos.color = new Color(0.2f, 0.45f, 1f, 0.65f);
+                Gizmos.DrawWireSphere(transform.position + _obliqueRing2Center, _obliqueRingRadius);
                 break;
             case ScenarioType.Cigarette:
                 Gizmos.color = new Color(0.2f, 0.8f, 0.3f, 0.6f);

@@ -171,6 +171,9 @@ public class SFUnifiedScenarioPresets : ScriptableObject
             case SFUnifiedCS.ScenarioType.InkCollision:
                 target.ApplyInkCollisionHipDefaults();
                 break;
+            case SFUnifiedCS.ScenarioType.ObliqueRingCollision:
+                target.ApplyObliqueRingCollisionHipDefaults();
+                break;
         }
     }
 }
