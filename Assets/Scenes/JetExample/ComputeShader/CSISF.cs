@@ -310,13 +310,19 @@ namespace ComputeShaderSF
             _les.ApplySGS(_velCurrent, dx, dy, dz, dt);
         }
 
-        public void UpdateSpace(bool useLES = true)
+        /// <param name="gravityPsi2">
+        /// Опционально: после нормировки применить к ψ₂ фазу exp(i (g·x) dt / ℏ) — тот же шаг, что в
+        /// <see cref="UpdateCigaretteSpace"/> (гравитация / «сила» через потенциал, а не через v).
+        /// </param>
+        public void UpdateSpace(bool useLES = true, Vector3? gravityPsi2 = null)
         {
             SetCommonUniforms();
             SchoedingerFlow();
             if (useLES)
                 LESStep();
             Normalize();
+            if (gravityPsi2.HasValue && gravityPsi2.Value.sqrMagnitude > 1e-20f)
+                ApplyGravityPsi2(gravityPsi2.Value);
             if (useLES)
                 PressureProject(_velCurrent);
             else

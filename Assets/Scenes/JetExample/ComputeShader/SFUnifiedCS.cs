@@ -96,6 +96,12 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     [SerializeField] private Vector2 _boxSpawnY = new Vector2(0.5f, 1.5f);
     [SerializeField] private Vector2 _boxSpawnZ = new Vector2(0.5f, 1.5f);
 
+    [Header("ISF — гравитация на ψ₂ (сила через фазу g·x, не через v)")]
+    [Tooltip("Для сценариев кроме Cigarette: тот же шаг GravityPsi2, что в example_cigarette (после первой нормировки).")]
+    [SerializeField] private bool _applyPsi2Gravity;
+    [Tooltip("Вектор g в фазе (g·P)·dt/ℏ на ψ₂; масштаб как у Cigarette — подбором.")]
+    [SerializeField] private Vector3 _psi2Gravity = new Vector3(0f, 1f, 0f);
+
     [Header("Управление")]
     [SerializeField] private bool _useLES = false;
     [SerializeField] private bool _paused;
@@ -556,7 +562,8 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         if (_scenario == ScenarioType.Cigarette)
             _isf.UpdateCigaretteSpace(_useLES, _cigaretteGravity, _maskBuf1);
         else
-            _isf.UpdateSpace(_useLES);
+            _isf.UpdateSpace(_useLES,
+                _applyPsi2Gravity ? _psi2Gravity : (Vector3?)null);
 
         if (_boundaryEachStep)
         {
@@ -584,7 +591,8 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         _isf.UpdateVelocities(_vel);
         _particles.CalculateMovement(_vel);
 
-        if (_scenario != ScenarioType.Jet && _scenario != ScenarioType.Cigarette)
+        if (_scenario != ScenarioType.Jet && _scenario != ScenarioType.Cigarette
+            && _scenario != ScenarioType.ObliqueRingCollision)
             _particles.WrapPositions(vol_size[0], vol_size[1], vol_size[2]);
     }
 
@@ -743,7 +751,8 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
 
         var offset = transform.position;
 
-        bool cull = _scenario == ScenarioType.Jet || _scenario == ScenarioType.Cigarette;
+        bool cull = _scenario == ScenarioType.Jet || _scenario == ScenarioType.Cigarette
+            || _scenario == ScenarioType.ObliqueRingCollision;
         float maxX = vol_size[0], maxY = vol_size[1], maxZ = vol_size[2];
         float velThreshold = maxX * maxX + maxY * maxY + maxZ * maxZ;
         int visible = 0;
