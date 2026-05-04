@@ -25,6 +25,13 @@ namespace ComputeShaderSF
         /// <summary>Ячейки с χ ниже порога — газ; в них ψ принудительно подменяется на малый вакуум после нормировки и фазовых шагов.</summary>
         public float liquidChiThreshold = 0.5f;
 
+        /// <summary>
+        /// Множитель в <c>VelocityOne</c>: u = (Δφ по сетке)·scale (через uniform <c>_Hbar</c> в этом kernel).
+        /// Исторически везде был <b>1</b>; подстановка ℏ для всех режимов ломала Jet, кольца и т.д.
+        /// Для ёмкости с χ <see cref="SFUnifiedCS"/> выставляет ℏ.
+        /// </summary>
+        public float velocityFromPsiScale = 1f;
+
         public float[] pxCPU, pyCPU, pzCPU;
         public ComputeBuffer psi1, psi2;
 
@@ -368,13 +375,10 @@ namespace ComputeShaderSF
             _kernels.Dispatch(_fftNormK, Groups1D, 1, 1);
         }
 
-        /// <summary>
-        /// Скорость из градиента фазы Madelunga: множитель должен совпадать с ℏ во всех местах (LES, PP, частицы).
-        /// Раньше здесь было 1.0 — проекция давления видела поле в ~1/ℏ раз «не то», чем то, что извлекается для частиц → поломанный gauge и дрейф (в т.ч. вбок).
-        /// </summary>
+        /// <summary>Скорость из фазовых градиентов ψ; масштаб — <see cref="velocityFromPsiScale"/> (пишется в <c>_Hbar</c> на время dispatch).</summary>
         private void VelocityOneForm(CSVelocity v)
         {
-            VelocityOneForm(v, hbar);
+            VelocityOneForm(v, velocityFromPsiScale);
         }
 
         private void VelocityOneForm(CSVelocity v, float h)

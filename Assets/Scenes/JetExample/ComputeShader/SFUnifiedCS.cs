@@ -192,6 +192,9 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         _isf.clampGridBorders = _scenario == ScenarioType.RectangularContainer;
         _isf.useLiquidChiField = _scenario == ScenarioType.RectangularContainer && _useLiquidChiField;
         _isf.liquidChiThreshold = _liquidChiThreshold;
+        _isf.velocityFromPsiScale = (_scenario == ScenarioType.RectangularContainer && _isf.useLiquidChiField)
+            ? hbar
+            : 1f;
 
         bool oneTimeParticles = _scenario == ScenarioType.LeapfrogRings
                              || _scenario == ScenarioType.ObliqueRingCollision
@@ -238,6 +241,9 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         {
             _isf.useLiquidChiField = _scenario == ScenarioType.RectangularContainer && _useLiquidChiField;
             _isf.liquidChiThreshold = _liquidChiThreshold;
+            _isf.velocityFromPsiScale = (_scenario == ScenarioType.RectangularContainer && _isf.useLiquidChiField)
+                ? hbar
+                : 1f;
         }
     }
 
@@ -724,6 +730,7 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         _isf.clampGridBorders = _scenario == ScenarioType.RectangularContainer;
         _isf.liquidChiThreshold = _liquidChiThreshold;
         bool isContainer = _scenario == ScenarioType.RectangularContainer;
+        _isf.velocityFromPsiScale = (isContainer && _isf.useLiquidChiField) ? hbar : 1f;
         if (_scenario == ScenarioType.Cigarette)
             _isf.UpdateCigaretteSpace(_useLES, _cigaretteGravity, _maskBuf1);
         else
