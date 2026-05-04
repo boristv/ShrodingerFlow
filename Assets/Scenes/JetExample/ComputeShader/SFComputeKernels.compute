@@ -49,6 +49,8 @@ float _GZ;
 float _DT;
 int  _ClampGridBorders;
 int  _GravityBothPsi;
+// 1 только при χ (ёмкость): сброс вырожденной |ψ|; Jet/кольца — 0 (как до fall water).
+int  _LiquidChiNormalizeFallback;
 
 StructuredBuffer<float>   _ChiIn;
 RWStructuredBuffer<float> _ChiOut;
@@ -80,7 +82,7 @@ void Normalize(uint3 id : SV_DispatchThreadID)
     float sqAbs1 = _Psi1[i].x * _Psi1[i].x + _Psi1[i].y * _Psi1[i].y;
     float sqAbs2 = _Psi2[i].x * _Psi2[i].x + _Psi2[i].y * _Psi2[i].y;
     float norm = sqrt(sqAbs1 + sqAbs2);
-    if (norm < 1e-20)
+    if (_LiquidChiNormalizeFallback != 0 && norm < 1e-20)
     {
         _Psi1[i] = float2(1.0, 0.0);
         _Psi2[i] = float2(0.01, 0.0);

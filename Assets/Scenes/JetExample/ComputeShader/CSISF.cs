@@ -212,6 +212,7 @@ namespace ComputeShaderSF
             _kernels.SetFloat("_DZ", dz);
             _kernels.SetFloat("_Hbar", hbar);
             _kernels.SetInt("_ClampGridBorders", clampGridBorders ? 1 : 0);
+            _kernels.SetInt("_LiquidChiNormalizeFallback", useLiquidChiField ? 1 : 0);
         }
 
         public void Normalize()
