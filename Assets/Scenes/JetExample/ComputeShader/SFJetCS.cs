@@ -25,6 +25,8 @@ public class SFJetCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensitySo
     [Header("Дополнительные настройки")]
     [SerializeField] private float _particleSize = 0.05f;
     [SerializeField] private bool _useLES = false;
+    [Tooltip("Кинематическая ν (лапласиан u на шаге); при LES плюс ν_t.")]
+    [SerializeField] private float _kinematicViscosity;
 
     [Header("Скорость симуляции")]
     [SerializeField] private bool _paused;
@@ -189,6 +191,7 @@ public class SFJetCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensitySo
 
     private void SimulationStep()
     {
+        _isf.kinematicViscosity = _kinematicViscosity;
         _isf.UpdateSpace(_useLES);
 
         float phaseOffset = -_omega * dt * iterator;

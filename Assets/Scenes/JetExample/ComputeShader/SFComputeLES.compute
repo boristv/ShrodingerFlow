@@ -18,6 +18,8 @@ float _DZ;
 float _Cs;
 float _Delta;
 float _DT;
+float _NuMol;
+float _TurbNuScale;
 
 #define IDX(i,j,k) ((i) * _NY * _NZ + (j) * _NZ + (k))
 
@@ -93,7 +95,7 @@ void AddTurbViscosity(uint3 id : SV_DispatchThreadID)
     if (i >= _NX || j >= _NY || k >= _NZ) return;
 
     int id_flat = IDX(i, j, k);
-    float nuC = _NuT[id_flat];
+    float nuC = _NuMol + _TurbNuScale * _NuT[id_flat];
 
     float uC = _U[id_flat];
     float lapU = (_U[safeIdx(i+1,j,k)] + _U[safeIdx(i-1,j,k)] - 2.0 * uC) / (_DX * _DX)

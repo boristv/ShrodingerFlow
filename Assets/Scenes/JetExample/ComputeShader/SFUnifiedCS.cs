@@ -104,6 +104,8 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
 
     [Header("Управление")]
     [SerializeField] private bool _useLES = false;
+    [Tooltip("Кинематическая ν: лапласиан поля скорости после извлечения из ψ; при LES добавляется к ν_t Smagorinsky (единицы как dx²/шаг).")]
+    [SerializeField] private float _kinematicViscosity;
     [SerializeField] private bool _paused;
     [SerializeField, Range(1, 20)] private int _stepsPerFrame = 3;
 
@@ -559,6 +561,7 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
 
     private void SimulationStep()
     {
+        _isf.kinematicViscosity = _kinematicViscosity;
         if (_scenario == ScenarioType.Cigarette)
             _isf.UpdateCigaretteSpace(_useLES, _cigaretteGravity, _maskBuf1);
         else

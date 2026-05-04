@@ -76,8 +76,10 @@ namespace ComputeShaderSF
             Dispatch3D(_computeStrainKernel);
         }
 
-        public void ApplySGS(CSVelocity vel,
-            float dx, float dy, float dz, float dt)
+        /// <param name="nuMol">Молекулярная (ламинарная) кинематическая вязкость, добавляется к ν.</param>
+        /// <param name="turbNuScale">1 — использовать ν_t из буфера (Smagorinsky); 0 — только νMol.</param>
+        public void ApplyViscosity(CSVelocity vel,
+            float dx, float dy, float dz, float dt, float nuMol, float turbNuScale)
         {
             SetGridUniforms();
 
@@ -85,6 +87,8 @@ namespace ComputeShaderSF
             _shader.SetFloat("_DY", dy);
             _shader.SetFloat("_DZ", dz);
             _shader.SetFloat("_DT", dt);
+            _shader.SetFloat("_NuMol", nuMol);
+            _shader.SetFloat("_TurbNuScale", turbNuScale);
 
             _shader.SetBuffer(_addTurbViscKernel, "_NuT", _nuT);
             _shader.SetBuffer(_addTurbViscKernel, "_U", vel.vx);

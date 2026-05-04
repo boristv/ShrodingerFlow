@@ -11,6 +11,8 @@ namespace ComputeShaderSF
         public float hbar, dt;
         public float Cs = 0.07f;
         public float filterFac = 4.0f;
+        /// <summary>Кинематическая вязкость ν: ∂u += ν∇²u·dt на поле скорости после VelocityOneForm; при LES складывается с ν_t.</summary>
+        public float kinematicViscosity;
 
         public float[] pxCPU, pyCPU, pzCPU;
         public ComputeBuffer psi1, psi2;
@@ -307,8 +309,19 @@ namespace ComputeShaderSF
             VelocityOneForm(_velCurrent);
             _les.Filter(_velCurrent, _velFiltered, dx, dy, dz);
             _les.ComputeNuT(_velFiltered, dx, dy, dz, Cs, filterFac);
-            _les.ApplySGS(_velCurrent, dx, dy, dz, dt);
+            _les.ApplyViscosity(_velCurrent, dx, dy, dz, dt, kinematicViscosity, 1f);
         }
+
+        private void LaminarViscosityStep()
+        {
+            if (kinematicViscosity <= 1e-20f)
+                return;
+            VelocityOneForm(_velCurrent);
+            _les.ApplyViscosity(_velCurrent, dx, dy, dz, dt, kinematicViscosity, 0f);
+        }
+
+        private bool UsesVelocityFieldViscosity =>
+            kinematicViscosity > 1e-20f;
 
         /// <param name="gravityPsi2">
         /// Опционально: после нормировки применить к ψ₂ фазу exp(i (g·x) dt / ℏ) — тот же шаг, что в
@@ -320,10 +333,13 @@ namespace ComputeShaderSF
             SchoedingerFlow();
             if (useLES)
                 LESStep();
+            else
+                LaminarViscosityStep();
             Normalize();
             if (gravityPsi2.HasValue && gravityPsi2.Value.sqrMagnitude > 1e-20f)
                 ApplyGravityPsi2(gravityPsi2.Value);
-            if (useLES)
+            bool ppFromVel = useLES || UsesVelocityFieldViscosity;
+            if (ppFromVel)
                 PressureProject(_velCurrent);
             else
                 PressureProject();
@@ -339,15 +355,18 @@ namespace ComputeShaderSF
             SchoedingerFlow();
             if (useLES)
                 LESStep();
+            else
+                LaminarViscosityStep();
             Normalize();
             ApplyGravityPsi2(gravityG);
-            if (useLES)
+            bool ppFromVel = useLES || UsesVelocityFieldViscosity;
+            if (ppFromVel)
                 PressureProject(_velCurrent);
             else
                 PressureProject();
             ApplyHeatSinkPsi1(isJetMask);
             Normalize();
-            if (useLES)
+            if (ppFromVel)
                 PressureProject(_velCurrent);
             else
                 PressureProject();
