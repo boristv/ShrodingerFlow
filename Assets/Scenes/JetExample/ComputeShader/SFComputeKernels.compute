@@ -12,6 +12,7 @@
 #pragma kernel HeatSinkPsi1
 #pragma kernel AdvectLiquidChi
 #pragma kernel ApplyGasVacuumPsi
+#pragma kernel AddGravityToVelocity
 #pragma kernel MaskVelocityByLiquidChi
 #pragma kernel SumHorizontalVelocityPartial
 #pragma kernel SubtractHorizontalVelocityMean
@@ -243,54 +244,13 @@ void MaskVelocityByLiquidChi(uint3 id : SV_DispatchThreadID)
     int i = (int)id.x;
     if (i >= _Num) return;
 
-    int iz = i % _ResZ;
-    int iy = (i / _ResZ) % _ResY;
-    int ix = i / (_ResY * _ResZ);
-    int r2 = _ResZ;
-    int r21 = _ResY * _ResZ;
-
-    int zNext, yNext, xNext;
-    if (_ClampGridBorders) {
-        if (iz < _ResZ - 1)
-            zNext = i + 1;
-        else if (iz > 0)
-            zNext = i - 1;
-        else
-            zNext = i;
-
-        if (iy < _ResY - 1)
-            yNext = i + r2;
-        else if (iy > 0)
-            yNext = i - r2;
-        else
-            yNext = i;
-
-        if (ix < _ResX - 1)
-            xNext = i + r21;
-        else if (ix > 0)
-            xNext = i - r21;
-        else
-            xNext = i;
-    } else {
-        zNext = (i / _ResZ) * _ResZ + (i + 1) % _ResZ;
-        yNext = i - ((i / _ResZ) % _ResY) * _ResZ
-              + ((((i + _ResZ) / _ResZ) % _ResY) * _ResZ);
-        xNext = (i + _ResZ * _ResY) % _Num;
-    }
-
+    // Один вес на все компоненты: разные cx,cy,cz давали анизотропное поле после интерполяции
+    // к частицам → джиттер и «скачки» у границы жидкости.
     float thr = _ChiLiqThreshold;
-    float cz = smoothstep(thr, 1.0, min(_ChiField[i], _ChiField[zNext]));
-    float cy = smoothstep(thr, 1.0, min(_ChiField[i], _ChiField[yNext]));
-    float cx = smoothstep(thr, 1.0, min(_ChiField[i], _ChiField[xNext]));
-
-    _VZ[i] *= cz;
-    _VY[i] *= cy;
-    _VX[i] *= cx;
-
-    float wcell = smoothstep(thr, thr + 0.02, _ChiField[i]);
-    _VZ[i] *= wcell;
-    _VY[i] *= wcell;
-    _VX[i] *= wcell;
+    float w = smoothstep(thr, thr + 0.09, _ChiField[i]);
+    _VX[i] *= w;
+    _VY[i] *= w;
+    _VZ[i] *= w;
 }
 
 groupshared float shVX[256];
@@ -397,6 +357,18 @@ void GravityPsi2(uint3 id : SV_DispatchThreadID)
     _Psi2[i] = cmul(_Psi2[i], rot);
     if (_GravityBothPsi)
         _Psi1[i] = cmul(_Psi1[i], rot);
+}
+
+// Прямое добавление ускорения к полю скорости (без накопления фазы в ψ).
+// _GX/_GY/_GZ здесь уже умножены на dt снаружи.
+[numthreads(256, 1, 1)]
+void AddGravityToVelocity(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+    _VX[i] += _GX;
+    _VY[i] += _GY;
+    _VZ[i] += _GZ;
 }
 
 [numthreads(256, 1, 1)]

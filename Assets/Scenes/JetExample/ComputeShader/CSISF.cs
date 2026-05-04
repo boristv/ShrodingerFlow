@@ -40,7 +40,7 @@ namespace ComputeShaderSF
         private int _normalizeK, _gaugeK, _shiftK, _mulEachK;
         private int _copyR2CK, _fftNormK, _velOneK;
         private int _staggeredK, _divK, _jetK;
-        private int _gravK, _heatK;
+        private int _gravK, _heatK, _addGravVelK;
         private int _advectLiquidChiK, _gasVacuumPsiK;
         private int _maskVelChiK;
         private int _sumHorizVelK, _subHorizMeanK;
@@ -89,6 +89,9 @@ namespace ComputeShaderSF
             _jetK = kernels.FindKernel("ApplyJetBoundary");
             _gravK = kernels.FindKernel("GravityPsi2");
             _heatK = kernels.FindKernel("HeatSinkPsi1");
+            _addGravVelK = kernels.HasKernel("AddGravityToVelocity")
+                ? kernels.FindKernel("AddGravityToVelocity")
+                : -1;
             _advectLiquidChiK = kernels.FindKernel("AdvectLiquidChi");
             _gasVacuumPsiK = kernels.FindKernel("ApplyGasVacuumPsi");
             _maskVelChiK = kernels.FindKernel("MaskVelocityByLiquidChi");
@@ -232,8 +235,9 @@ namespace ComputeShaderSF
         }
 
         /// <summary>
-        /// Адвекция χ полулагранжевски по уже замаскированному u (после <see cref="UpdateVelocities"/> того же подшага),
-        /// чтобы χ^n → χ^{n+1} к началу следующего подшага; CFL ограничен в шейдере.
+        /// Адвекция χ полулагранжевски по полю u до маски «газа» (в ёмкости — после <see cref="ApplyVelocityGravity"/>,
+        /// если она используется), иначе интерфейс χ не движется; затем вызывайте <see cref="ApplyLiquidChiVelocityMask"/>.
+        /// CFL ограничен в шейдере.
         /// </summary>
         public void AdvectLiquidChi(CSVelocity vel)
         {
@@ -552,12 +556,46 @@ namespace ComputeShaderSF
             _kernels.Dispatch(_heatK, Groups1D, 1, 1);
         }
 
+        /// <summary>Пересчёт u из ψ (без маски по χ): для адвекции χ нужна полная скорость на границе жидкость/газ.</summary>
         public void UpdateVelocities(CSVelocity vel)
         {
             VelocityOneForm(vel);
             StaggeredSharp(vel);
-            MaskVelocityByLiquidChi(vel);
             RemoveMeanHorizontalVelocity(vel);
+        }
+
+        /// <summary>
+        /// Гравитация на уровне поля скорости: добавляет g·dt к каждой компоненте, затем <see cref="PressureProject(CSVelocity)"/>.
+        /// В отличие от GravityPsi2, не накапливает фазу в ψ. После Gauge снова вызывается <see cref="ApplyGasVacuumFromChi"/>,
+        /// чтобы в «газе» χ не остались искажённые ψ после фазового сдвига.
+        /// Маску по χ НЕ применяет — её вызывает владелец после <see cref="AdvectLiquidChi"/> (чтобы χ двигался на интерфейсе).
+        /// </summary>
+        public void ApplyVelocityGravity(Vector3 g, CSVelocity vel)
+        {
+            if (_addGravVelK < 0)
+            {
+                Debug.LogError("[CSISF] Шейдер ISF без kernel AddGravityToVelocity — обновите SFComputeKernels.compute / asset.");
+                return;
+            }
+            SetCommonUniforms();
+            _kernels.SetFloat("_GX", g.x * dt);
+            _kernels.SetFloat("_GY", g.y * dt);
+            _kernels.SetFloat("_GZ", g.z * dt);
+            _kernels.SetBuffer(_addGravVelK, "_VX", vel.vx);
+            _kernels.SetBuffer(_addGravVelK, "_VY", vel.vy);
+            _kernels.SetBuffer(_addGravVelK, "_VZ", vel.vz);
+            _kernels.Dispatch(_addGravVelK, Groups1D, 1, 1);
+            RemoveMeanHorizontalVelocity(vel);
+            PressureProject(vel);
+            ApplyGasVacuumFromChi();
+        }
+
+        /// <summary>Обнулить скорость в «газе» по текущему χ — только при <see cref="useLiquidChiField"/>; после <see cref="AdvectLiquidChi"/> и перед трассерами.</summary>
+        public void ApplyLiquidChiVelocityMask(CSVelocity vel)
+        {
+            if (!useLiquidChiField)
+                return;
+            MaskVelocityByLiquidChi(vel);
         }
 
         public void ApplyJetBoundary(ComputeBuffer isJet,

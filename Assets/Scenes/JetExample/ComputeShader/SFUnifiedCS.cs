@@ -85,12 +85,16 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     [SerializeField] private Vector3 _containerFluidMax = new Vector3(2.65f, 3.55f, 2.6f);
     [Tooltip("Толщина слоя ячеек-«стенок» у границ домена (penalization), в тех же единицах, что vol_size.")]
     [SerializeField] private float _containerWallThickness = 0.1f;
-    [Tooltip("Ёмкость: разброс трассы после клампа, в долях min(Δx,Δy,Δz). Частицы без объёма иначе слепаются в одну плоскость у дна/стенок. 0 = только отступ margin от границы.")]
-    [SerializeField] private float _containerParticleTracerJitter = 0.55f;
+    [Tooltip("Ёмкость: разброс трассы после клампа, в долях min(Δx,Δy,Δz). Большие значения дают заметный джиттер у границы домена.")]
+    [SerializeField] private float _containerParticleTracerJitter = 0.08f;
     [Tooltip("Поле χ (газ/жидкость): отдельная от |ψ| транспортировка и «вакуум» ψ в газе; только RectangularContainer.")]
     [SerializeField] private bool _useLiquidChiField;
     [Tooltip("Ячейка — жидкость, если χ ≥ порога; иначе после каждой нормировки/фазы ψ сбрасывается к вакууму.")]
     [SerializeField, Range(0f, 1f)] private float _liquidChiThreshold = 0.5f;
+    [Tooltip("Подтяжка трассеров к χ: 0 = только поле скорости (стабильнее). Включайте >0 если нужны маркеры строго в жидкости.")]
+    [SerializeField, Range(0f, 1f)] private float _liquidParticleConstrainStrength = 0f;
+    [Tooltip("Мягкая зона у порога χ: пока сэмпл χ ≥ (порог − margin), подтяжка не включается — меньше скачков на границе жидкости.")]
+    [SerializeField, Range(0.02f, 0.25f)] private float _liquidParticleChiSoftMargin = 0.1f;
 
     [Header("Cigarette — example_cigarette.hip")]
     [Tooltip("Фоновый поток U для начальной плоской волны (k = U/hbar).")]
@@ -239,6 +243,11 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                 iterator++;
                 SimulationStep();
             }
+
+            // Подтяжку к χ по χ делаем раз за кадр: при stepsPerFrame>1 вызов после каждого подшага
+            // суммировался и давал сильный дребезг трассеров у границы жидкости.
+            if (_scenario == ScenarioType.RectangularContainer && _isf.useLiquidChiField)
+                ApplyLiquidChiParticleConstrain();
 
             if (_spawnEachStep
                 && (_scenario == ScenarioType.Jet || _scenario == ScenarioType.Cigarette))
@@ -403,6 +412,22 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         max = Vector3.Min(max, vmax);
     }
 
+    /// <summary>Отрицательно внутри AABB; снаружи — расстояние до ближайшей точки на поверхности.</summary>
+    private static float BoxSignedDistanceToFluidAabb(float px, float py, float pz, Vector3 bmin, Vector3 bmax)
+    {
+        float cx = Mathf.Clamp(px, bmin.x, bmax.x);
+        float cy = Mathf.Clamp(py, bmin.y, bmax.y);
+        float cz = Mathf.Clamp(pz, bmin.z, bmax.z);
+        float dx = px - cx, dy = py - cy, dz = pz - cz;
+        float dOut = Mathf.Sqrt(dx * dx + dy * dy + dz * dz);
+        if (dOut > 1e-8f)
+            return dOut;
+        float dInX = Mathf.Min(px - bmin.x, bmax.x - px);
+        float dInY = Mathf.Min(py - bmin.y, bmax.y - py);
+        float dInZ = Mathf.Min(pz - bmin.z, bmax.z - pz);
+        return -Mathf.Min(dInX, Mathf.Min(dInY, dInZ));
+    }
+
     /// <summary>
     /// Неподвижная жидкость в прямоугольнике (геометрия — для частиц/χ); ψ задаётся согласованно по всему домену.
     /// Normalize делается по ячейке — модули сравниваются только внутри (ψ₁,ψ₂); снаружи нужна та же пропорция,
@@ -417,22 +442,15 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         const float outsideScale = 1e-6f;
         var tmp1 = new Vector2[num];
         var tmp2 = new Vector2[num];
+        float feather = 3f * Mathf.Min(_isf.dx, Mathf.Min(_isf.dy, _isf.dz));
+        feather = Mathf.Max(feather, 1e-6f);
         for (int i = 0; i < num; i++)
         {
             float px = _isf.pxCPU[i], py = _isf.pyCPU[i], pz = _isf.pzCPU[i];
-            bool inside = px >= fmin.x && px <= fmax.x
-                       && py >= fmin.y && py <= fmax.y
-                       && pz >= fmin.z && pz <= fmax.z;
-            if (inside)
-            {
-                tmp1[i] = in1;
-                tmp2[i] = in2;
-            }
-            else
-            {
-                tmp1[i] = in1 * outsideScale;
-                tmp2[i] = in2 * outsideScale;
-            }
+            float sd = BoxSignedDistanceToFluidAabb(px, py, pz, fmin, fmax);
+            float win = sd <= 0f ? 1f : Mathf.Exp(-sd / feather);
+            tmp1[i] = Vector2.Lerp(in1 * outsideScale, in1, win);
+            tmp2[i] = Vector2.Lerp(in2 * outsideScale, in2, win);
         }
         _isf.psi1.SetData(tmp1);
         _isf.psi2.SetData(tmp2);
@@ -686,12 +704,16 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         _isf.kinematicViscosity = _kinematicViscosity;
         _isf.clampGridBorders = _scenario == ScenarioType.RectangularContainer;
         _isf.liquidChiThreshold = _liquidChiThreshold;
+        bool isContainer = _scenario == ScenarioType.RectangularContainer;
         if (_scenario == ScenarioType.Cigarette)
             _isf.UpdateCigaretteSpace(_useLES, _cigaretteGravity, _maskBuf1);
         else
-            _isf.UpdateSpace(_useLES,
-                _applyPsi2Gravity ? _psi2Gravity : (Vector3?)null,
-                _applyPsi2Gravity && _scenario == ScenarioType.RectangularContainer);
+        {
+            // Для контейнера фазовую гравитацию на ψ не используем — сила задаётся в ApplyVelocityGravity
+            // (иначе накопление фазы → «перемотка» atan2 в VelocityOne → скачки).
+            Vector3? phaseGrav = (_applyPsi2Gravity && !isContainer) ? _psi2Gravity : (Vector3?)null;
+            _isf.UpdateSpace(_useLES, phaseGrav, false);
+        }
 
         if (_boundaryEachStep)
         {
@@ -717,16 +739,40 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
             SpawnNozzleParticles();
 
         _isf.UpdateVelocities(_vel);
+        // Gravity ДО адвекции χ: поле скорости должно нести гравитацию,
+        // иначе χ advect-ится по нулевому полю и блок жидкости остаётся на месте.
+        if (isContainer && _applyPsi2Gravity && _psi2Gravity.sqrMagnitude > 1e-14f)
+            _isf.ApplyVelocityGravity(_psi2Gravity, _vel);
         if (_isf.useLiquidChiField)
+        {
             _isf.AdvectLiquidChi(_vel);
-        _particles.CalculateMovement(_vel, _scenario == ScenarioType.RectangularContainer);
+            _isf.ApplyLiquidChiVelocityMask(_vel);
+        }
+        _particles.CalculateMovement(_vel, isContainer);
 
         if (_scenario == ScenarioType.RectangularContainer)
+        {
             _particles.ClampPositionsToVolume(vol_size[0], vol_size[1], vol_size[2],
                 _containerParticleTracerJitter, iterator);
+        }
         else if (_scenario != ScenarioType.Jet && _scenario != ScenarioType.Cigarette
             && _scenario != ScenarioType.ObliqueRingCollision)
             _particles.WrapPositions(vol_size[0], vol_size[1], vol_size[2]);
+    }
+
+    private void ApplyLiquidChiParticleConstrain()
+    {
+        float mcell = Mathf.Min(_isf.dx, Mathf.Min(_isf.dy, _isf.dz));
+        Vector3 gdir = Vector3.zero;
+        float gPerCell = 0f;
+        if (_applyPsi2Gravity && _psi2Gravity.sqrMagnitude > 1e-14f)
+        {
+            gdir = _psi2Gravity.normalized;
+            gPerCell = 0.45f / Mathf.Max(mcell, 1e-6f);
+        }
+
+        _particles.ConstrainToLiquidChi(_isf.LiquidChiBuffer, _liquidChiThreshold,
+            _liquidParticleConstrainStrength, gdir, gPerCell, _liquidParticleChiSoftMargin);
     }
 
     #endregion

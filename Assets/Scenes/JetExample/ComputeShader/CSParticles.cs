@@ -7,6 +7,7 @@ namespace ComputeShaderSF
     {
         private ComputeShader _shader;
         private int _addKernel, _interpKernel, _rk4Kernel, _wrapKernel, _clampKernel;
+        private int _constrainLiquidChiKernel;
 
         private ComputeBuffer _x, _y, _z;
         private ComputeBuffer _k1x, _k1y, _k1z;
@@ -35,6 +36,9 @@ namespace ComputeShaderSF
             _rk4Kernel = shader.FindKernel("RK4Update");
             _wrapKernel = shader.FindKernel("WrapPositions");
             _clampKernel = shader.FindKernel("ClampPositionsToVolume");
+            _constrainLiquidChiKernel = shader.HasKernel("ConstrainParticlesToLiquidChi")
+                ? shader.FindKernel("ConstrainParticlesToLiquidChi")
+                : -1;
 
             _x = new ComputeBuffer(maxParticles, sizeof(float));
             _y = new ComputeBuffer(maxParticles, sizeof(float));
@@ -216,6 +220,30 @@ namespace ComputeShaderSF
             _shader.SetBuffer(_clampKernel, "_PosY", _y);
             _shader.SetBuffer(_clampKernel, "_PosZ", _z);
             _shader.Dispatch(_clampKernel, (_size + 255) / 256, 1, 1);
+        }
+
+        /// <summary>
+        /// Визуальная привязка трассеров к жидкой фазе χ: в газе шаг вдоль ∇χ (сэмпл χ трилинейно) плюс слабое смещение вдоль gravityDir.
+        /// </summary>
+        public void ConstrainToLiquidChi(ComputeBuffer liquidChi, float threshold,
+            float strength = 0f, Vector3 gravityDir = default, float gravityTermPerCell = 0f,
+            float chiSoftMargin = 0.1f)
+        {
+            if (_size == 0 || liquidChi == null || _constrainLiquidChiKernel < 0) return;
+
+            SetTorusUniforms();
+            _shader.SetInt("_ParticleCount", _size);
+            _shader.SetFloat("_ChiThresholdParticles", threshold);
+            _shader.SetFloat("_ChiConstrainStrength", Mathf.Clamp01(strength));
+            float maxMargin = Mathf.Max(0f, threshold - 0.03f);
+            _shader.SetFloat("_ChiConstrainSoftMargin", Mathf.Clamp(chiSoftMargin, 0.05f, maxMargin));
+            _shader.SetVector("_ChiGravityDir", gravityDir);
+            _shader.SetFloat("_ChiGravityScale", gravityTermPerCell);
+            _shader.SetBuffer(_constrainLiquidChiKernel, "_PosX", _x);
+            _shader.SetBuffer(_constrainLiquidChiKernel, "_PosY", _y);
+            _shader.SetBuffer(_constrainLiquidChiKernel, "_PosZ", _z);
+            _shader.SetBuffer(_constrainLiquidChiKernel, "_LiquidChi", liquidChi);
+            _shader.Dispatch(_constrainLiquidChiKernel, (_size + 255) / 256, 1, 1);
         }
 
         public void ReadPositions(float[] outX, float[] outY, float[] outZ)
