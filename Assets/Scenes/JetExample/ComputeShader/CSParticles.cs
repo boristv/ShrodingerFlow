@@ -6,7 +6,7 @@ namespace ComputeShaderSF
     public class CSParticles : IDisposable
     {
         private ComputeShader _shader;
-        private int _addKernel, _interpKernel, _rk4Kernel, _wrapKernel;
+        private int _addKernel, _interpKernel, _rk4Kernel, _wrapKernel, _clampKernel;
 
         private ComputeBuffer _x, _y, _z;
         private ComputeBuffer _k1x, _k1y, _k1z;
@@ -34,6 +34,7 @@ namespace ComputeShaderSF
             _interpKernel = shader.FindKernel("InterpolateVelocity");
             _rk4Kernel = shader.FindKernel("RK4Update");
             _wrapKernel = shader.FindKernel("WrapPositions");
+            _clampKernel = shader.FindKernel("ClampPositionsToVolume");
 
             _x = new ComputeBuffer(maxParticles, sizeof(float));
             _y = new ComputeBuffer(maxParticles, sizeof(float));
@@ -109,11 +110,16 @@ namespace ComputeShaderSF
             _stagingZ = new ComputeBuffer(_stagingCapacity, sizeof(float));
         }
 
-        public void CalculateMovement(CSVelocity vel)
+        /// <param name="clampVelocityGrid">
+        /// Для непериодического домена (ёмкость): индексы сетки без wrap по модулям, иначе у границ
+        /// частицы читают скорость с «противоположной» стороны → мигание цвета и почти нулевой дрейф.
+        /// </param>
+        public void CalculateMovement(CSVelocity vel, bool clampVelocityGrid = false)
         {
             if (_size == 0) return;
 
             SetTorusUniforms();
+            _shader.SetInt("_VelInterpClampGrid", clampVelocityGrid ? 1 : 0);
             _shader.SetInt("_ParticleCount", _size);
             int groups = (_size + 255) / 256;
 
@@ -184,6 +190,20 @@ namespace ComputeShaderSF
             _shader.SetBuffer(_wrapKernel, "_PosY", _y);
             _shader.SetBuffer(_wrapKernel, "_PosZ", _z);
             _shader.Dispatch(_wrapKernel, (_size + 255) / 256, 1, 1);
+        }
+
+        /// <summary>Периодические границы выключены — частицы остаются внутри <c>[0, vol]</c> (ёмкость).</summary>
+        public void ClampPositionsToVolume(float volSizeX, float volSizeY, float volSizeZ)
+        {
+            if (_size == 0) return;
+            _shader.SetInt("_ParticleCount", _size);
+            _shader.SetFloat("_VolSizeX", volSizeX);
+            _shader.SetFloat("_VolSizeY", volSizeY);
+            _shader.SetFloat("_VolSizeZ", volSizeZ);
+            _shader.SetBuffer(_clampKernel, "_PosX", _x);
+            _shader.SetBuffer(_clampKernel, "_PosY", _y);
+            _shader.SetBuffer(_clampKernel, "_PosZ", _z);
+            _shader.Dispatch(_clampKernel, (_size + 255) / 256, 1, 1);
         }
 
         public void ReadPositions(float[] outX, float[] outY, float[] outZ)

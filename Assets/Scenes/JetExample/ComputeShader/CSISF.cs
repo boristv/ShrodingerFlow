@@ -13,6 +13,11 @@ namespace ComputeShaderSF
         public float filterFac = 4.0f;
         /// <summary>Кинематическая вязкость ν: ∂u += ν∇²u·dt на поле скорости после VelocityOneForm; при LES складывается с ν_t.</summary>
         public float kinematicViscosity;
+        /// <summary>
+        /// Условия на границе сетки без периодического wrap для VelocityOne и Div (домен-ёмкость).
+        /// Иначе сосед «+X» у правой стенки = левая стенка → ложная скорость и мигание частиц.
+        /// </summary>
+        public bool clampGridBorders;
 
         public float[] pxCPU, pyCPU, pzCPU;
         public ComputeBuffer psi1, psi2;
@@ -177,6 +182,7 @@ namespace ComputeShaderSF
             _kernels.SetFloat("_DY", dy);
             _kernels.SetFloat("_DZ", dz);
             _kernels.SetFloat("_Hbar", hbar);
+            _kernels.SetInt("_ClampGridBorders", clampGridBorders ? 1 : 0);
         }
 
         public void Normalize()
@@ -323,11 +329,12 @@ namespace ComputeShaderSF
         private bool UsesVelocityFieldViscosity =>
             kinematicViscosity > 1e-20f;
 
-        /// <param name="gravityPsi2">
-        /// Опционально: после нормировки применить к ψ₂ фазу exp(i (g·x) dt / ℏ) — тот же шаг, что в
-        /// <see cref="UpdateCigaretteSpace"/> (гравитация / «сила» через потенциал, а не через v).
+        /// <param name="gravityRotatePsi1Too">
+        /// Если true — та же фаза на ψ₁ и ψ₂ (нужно для «тяжёлой» жидкости: иначе |ψ₁|≫|ψ₂| и VelocityOne почти не видит градиент от гравитации).
+        /// Cigarette / hip: оставить false (только ψ₂).
         /// </param>
-        public void UpdateSpace(bool useLES = true, Vector3? gravityPsi2 = null)
+        public void UpdateSpace(bool useLES = true, Vector3? gravityPsi2 = null,
+            bool gravityRotatePsi1Too = false)
         {
             SetCommonUniforms();
             SchoedingerFlow();
@@ -337,7 +344,7 @@ namespace ComputeShaderSF
                 LaminarViscosityStep();
             Normalize();
             if (gravityPsi2.HasValue && gravityPsi2.Value.sqrMagnitude > 1e-20f)
-                ApplyGravityPsi2(gravityPsi2.Value);
+                ApplyGravityPsi2(gravityPsi2.Value, gravityRotatePsi1Too);
             bool ppFromVel = useLES || UsesVelocityFieldViscosity;
             if (ppFromVel)
                 PressureProject(_velCurrent);
@@ -372,13 +379,15 @@ namespace ComputeShaderSF
                 PressureProject();
         }
 
-        private void ApplyGravityPsi2(Vector3 g)
+        private void ApplyGravityPsi2(Vector3 g, bool rotatePsi1Too = false)
         {
             SetCommonUniforms();
+            _kernels.SetInt("_GravityBothPsi", rotatePsi1Too ? 1 : 0);
             _kernels.SetFloat("_GX", g.x);
             _kernels.SetFloat("_GY", g.y);
             _kernels.SetFloat("_GZ", g.z);
             _kernels.SetFloat("_DT", dt);
+            _kernels.SetBuffer(_gravK, "_Psi1", psi1);
             _kernels.SetBuffer(_gravK, "_Psi2", psi2);
             _kernels.SetBuffer(_gravK, "_PX", _px);
             _kernels.SetBuffer(_gravK, "_PY", _py);

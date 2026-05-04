@@ -2,6 +2,7 @@
 #pragma kernel InterpolateVelocity
 #pragma kernel RK4Update
 #pragma kernel WrapPositions
+#pragma kernel ClampPositionsToVolume
 
 RWStructuredBuffer<float> _PosX;
 RWStructuredBuffer<float> _PosY;
@@ -47,6 +48,7 @@ int   _TorResZ;
 float _TorDX;
 float _TorDY;
 float _TorDZ;
+int   _VelInterpClampGrid;
 
 [numthreads(256, 1, 1)]
 void AddParticles(uint3 id : SV_DispatchThreadID)
@@ -67,24 +69,51 @@ void InterpolateVelocity(uint3 id : SV_DispatchThreadID)
 
     float sh_x = _ShiftX[i] * _ShiftFactor;
     float cell_x = (_PosX[i] + sh_x) / _TorDX;
-    int ix_raw = (int)floor(cell_x);
-    float wx = cell_x - (float)ix_raw;
-    int ix  = ((ix_raw % _TorResX) + _TorResX) % _TorResX;
-    int ixp = (ix + 1) % _TorResX;
+    int ix, ixp;
+    float wx;
+    if (_VelInterpClampGrid) {
+        cell_x = clamp(cell_x, 0.0, (float)_TorResX - 1e-5);
+        ix = (int)floor(cell_x);
+        wx = cell_x - (float)ix;
+        ixp = min(ix + 1, _TorResX - 1);
+    } else {
+        int ix_raw = (int)floor(cell_x);
+        wx = cell_x - (float)ix_raw;
+        ix = ((ix_raw % _TorResX) + _TorResX) % _TorResX;
+        ixp = (ix + 1) % _TorResX;
+    }
 
     float sh_y = _ShiftY[i] * _ShiftFactor;
     float cell_y = (_PosY[i] + sh_y) / _TorDY;
-    int iy_raw = (int)floor(cell_y);
-    float wy = cell_y - (float)iy_raw;
-    int iy  = ((iy_raw % _TorResY) + _TorResY) % _TorResY;
-    int iyp = (iy + 1) % _TorResY;
+    int iy, iyp;
+    float wy;
+    if (_VelInterpClampGrid) {
+        cell_y = clamp(cell_y, 0.0, (float)_TorResY - 1e-5);
+        iy = (int)floor(cell_y);
+        wy = cell_y - (float)iy;
+        iyp = min(iy + 1, _TorResY - 1);
+    } else {
+        int iy_raw = (int)floor(cell_y);
+        wy = cell_y - (float)iy_raw;
+        iy = ((iy_raw % _TorResY) + _TorResY) % _TorResY;
+        iyp = (iy + 1) % _TorResY;
+    }
 
     float sh_z = _ShiftZ[i] * _ShiftFactor;
     float cell_z = (_PosZ[i] + sh_z) / _TorDZ;
-    int iz_raw = (int)floor(cell_z);
-    float wz = cell_z - (float)iz_raw;
-    int iz  = ((iz_raw % _TorResZ) + _TorResZ) % _TorResZ;
-    int izp = (iz + 1) % _TorResZ;
+    int iz, izp;
+    float wz;
+    if (_VelInterpClampGrid) {
+        cell_z = clamp(cell_z, 0.0, (float)_TorResZ - 1e-5);
+        iz = (int)floor(cell_z);
+        wz = cell_z - (float)iz;
+        izp = min(iz + 1, _TorResZ - 1);
+    } else {
+        int iz_raw = (int)floor(cell_z);
+        wz = cell_z - (float)iz_raw;
+        iz = ((iz_raw % _TorResZ) + _TorResZ) % _TorResZ;
+        izp = (iz + 1) % _TorResZ;
+    }
 
     int r2 = _TorResZ;
     int r21 = _TorResZ * _TorResY;
@@ -137,4 +166,15 @@ void WrapPositions(uint3 id : SV_DispatchThreadID)
     float z = fmod(_PosZ[i], _VolSizeZ);
     if (z < 0.0) z += _VolSizeZ;
     _PosZ[i] = z;
+}
+
+[numthreads(256, 1, 1)]
+void ClampPositionsToVolume(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+
+    _PosX[i] = clamp(_PosX[i], 0.0, _VolSizeX);
+    _PosY[i] = clamp(_PosY[i], 0.0, _VolSizeY);
+    _PosZ[i] = clamp(_PosZ[i], 0.0, _VolSizeZ);
 }

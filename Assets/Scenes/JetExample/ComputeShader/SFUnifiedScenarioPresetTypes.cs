@@ -106,3 +106,23 @@ public struct SFUnifiedLeapfrogRingsPreset
     public int stepsPerFrame;
     public bool useLES;
 }
+
+/// <summary>Пресет «ёмкость»: домен = сосуд; блок жидкости; стенки по периметру; гравитация/вязкость — поля SFUnifiedCS.</summary>
+[Serializable]
+public struct SFUnifiedRectangularContainerPreset
+{
+    public int[] vol_size;
+    public int[] vol_res;
+    public float hbar;
+    public float dt;
+    public Vector3 fluidMin;
+    public Vector3 fluidMax;
+    public float wallThickness;
+    public bool applyPsi2Gravity;
+    public Vector3 psi2Gravity;
+    public float kinematicViscosity;
+    public int nParticles;
+    public float particleSize;
+    public int stepsPerFrame;
+    public bool useLES;
+}

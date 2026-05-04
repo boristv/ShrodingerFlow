@@ -5,6 +5,7 @@ using UnityEngine;
 /// Jet — JetExampleCS.unity; Sphere — ObstacleExample (SFObstacle); Cylinder — OtherObstacleExample (OtherSFObstacle);
 /// TwoSpheres — дефолты SFUnifiedCS / UnifiedCS.unity;
 /// Leapfrog — кольца и симуляция из UnifiedCS.unity, объём 10×5×5 (кольца не влезают в 4×2×2).
+/// RectangularContainer — ёмкость = весь домен vol_size, стенки penalization, блок жидкости в psi.
 /// </summary>
 [CreateAssetMenu(fileName = "SFUnifiedScenarioPresets", menuName = "ShrodingerFlow/SF Unified Scenario Presets")]
 public class SFUnifiedScenarioPresets : ScriptableObject
@@ -26,6 +27,9 @@ public class SFUnifiedScenarioPresets : ScriptableObject
 
     [Header("LeapfrogRings — UnifiedCS.unity (кольца + spawn), vol 10×5×5")]
     public SFUnifiedLeapfrogRingsPreset leapfrogRings;
+
+    [Header("RectangularContainer — прямоугольная ёмкость, блок жидкости, penalization стенок")]
+    public SFUnifiedRectangularContainerPreset rectangularContainer;
 
     /// <summary>Встроенные значения (копия референсных сцен на момент добавления).</summary>
     public static SFUnifiedScenarioPresets CreateBuiltIn()
@@ -139,6 +143,25 @@ public class SFUnifiedScenarioPresets : ScriptableObject
             stepsPerFrame = 3,
             useLES = false
         };
+
+        // Высокая ёмкость 3×4×3: жидкость у «крышки», падает вниз (−Y в координатах объёма).
+        rectangularContainer = new SFUnifiedRectangularContainerPreset
+        {
+            vol_size = new[] { 3, 4, 3 },
+            vol_res = new[] { 64, 64, 64 },
+            hbar = 0.05f,
+            dt = 1f / 24f,
+            fluidMin = new Vector3(0.35f, 2.2f, 0.4f),
+            fluidMax = new Vector3(2.65f, 3.55f, 2.6f),
+            wallThickness = 0.1f,
+            applyPsi2Gravity = true,
+            psi2Gravity = new Vector3(0f, -4f, 0f),
+            kinematicViscosity = 0.0002f,
+            nParticles = 80000,
+            particleSize = 0.06f,
+            stepsPerFrame = 2,
+            useLES = true
+        };
     }
 
     public void ApplyTo(SFUnifiedCS target)
@@ -173,6 +196,9 @@ public class SFUnifiedScenarioPresets : ScriptableObject
                 break;
             case SFUnifiedCS.ScenarioType.ObliqueRingCollision:
                 target.ApplyObliqueRingCollisionHipDefaults();
+                break;
+            case SFUnifiedCS.ScenarioType.RectangularContainer:
+                target.ApplyRectangularContainerPreset(rectangularContainer);
                 break;
         }
     }

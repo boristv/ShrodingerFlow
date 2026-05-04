@@ -22,7 +22,9 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         /// <summary>example_ink_collision.hip / карточка Ink drop: два шара ±1, скорости ∓1 по X, границы ψ на каждом шаге.</summary>
         InkCollision,
         /// <summary>Вид сверху (XZ): кольцо слева, нормаль +X; кольцо с большой Z, нормаль −Z; плоскости перпендикулярны, встреча в центре объёма.</summary>
-        ObliqueRingCollision
+        ObliqueRingCollision,
+        /// <summary>Домен = внутренность ёмкости; стенки — penalization в полосе у границ; начальное состояние — прямой блок жидкости. Гравитация и вязкость — через существующие поля.</summary>
+        RectangularContainer
     }
 
     [Header("Compute Shaders")]
@@ -76,6 +78,14 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     [SerializeField] private float _obliqueRingRadius = 0.6f;
     [SerializeField] private float _obliquePsi2Re = 0.05f;
 
+    [Header("Прямоугольная ёмкость (RectangularContainer)")]
+    [Tooltip("Минимальный угол блока начальной жидкости в координатах объёма [0..vol_size]. Нужны «гравитация на ψ₂» и клип интерполяции скорости (включено в коде для этого сценария).")]
+    [SerializeField] private Vector3 _containerFluidMin = new Vector3(0.35f, 2.2f, 0.4f);
+    [Tooltip("Максимальный угол блока начальной жидкости.")]
+    [SerializeField] private Vector3 _containerFluidMax = new Vector3(2.65f, 3.55f, 2.6f);
+    [Tooltip("Толщина слоя ячеек-«стенок» у границ домена (penalization), в тех же единицах, что vol_size.")]
+    [SerializeField] private float _containerWallThickness = 0.1f;
+
     [Header("Cigarette — example_cigarette.hip")]
     [Tooltip("Фоновый поток U для начальной плоской волны (k = U/hbar).")]
     [SerializeField] private Vector3 _cigaretteBackgroundU = new Vector3(0.1f, 0f, 0f);
@@ -97,7 +107,7 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     [SerializeField] private Vector2 _boxSpawnZ = new Vector2(0.5f, 1.5f);
 
     [Header("ISF — гравитация на ψ₂ (сила через фазу g·x, не через v)")]
-    [Tooltip("Для сценариев кроме Cigarette: тот же шаг GravityPsi2, что в example_cigarette (после первой нормировки).")]
+    [Tooltip("Для RectangularContainer при включении гравитации фаза добавляется и на ψ₁ (иначе доминирующий |ψ₁| почти не даёт скорости). Остальные сценарии — только ψ₂, как в hip.")]
     [SerializeField] private bool _applyPsi2Gravity;
     [Tooltip("Вектор g в фазе (g·P)·dt/ℏ на ψ₂; масштаб как у Cigarette — подбором.")]
     [SerializeField] private Vector3 _psi2Gravity = new Vector3(0f, 1f, 0f);
@@ -150,11 +160,13 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
 
         _isf = new CSISF();
         _isf.Init(_kernelsShader, _fftShader, _lesShader, vol_size, vol_res, hbar, dt);
+        _isf.clampGridBorders = _scenario == ScenarioType.RectangularContainer;
 
         bool oneTimeParticles = _scenario == ScenarioType.LeapfrogRings
                              || _scenario == ScenarioType.ObliqueRingCollision
                              || _scenario == ScenarioType.TwoSpheres
-                             || _scenario == ScenarioType.InkCollision;
+                             || _scenario == ScenarioType.InkCollision
+                             || _scenario == ScenarioType.RectangularContainer;
         int maxParticles = oneTimeParticles ? _nParticles : _nParticles * 1000;
 
         _particles = new CSParticles();
@@ -332,6 +344,18 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                 _spawnEachStep = false;
                 _boundaryEachStep = true;
                 break;
+
+            case ScenarioType.RectangularContainer:
+                InitPsiFluidBlock();
+                _maskBuf1 = BuildContainerWallMask();
+                _kvecX = _kvecY = _kvecZ = 0f;
+                _omega = 0f;
+                RunInitBoundary(_maskBuf1, 0f, 0f, 0f, 0f, 10);
+                SpawnParticlesInFluidBlock(_nParticles);
+                _particlesCount = _particles.Size;
+                _spawnEachStep = false;
+                _boundaryEachStep = true;
+                break;
         }
     }
 
@@ -348,6 +372,46 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         {
             tmp1[i] = new Vector2(1f, 0f);
             tmp2[i] = new Vector2(0.01f, 0f);
+        }
+        _isf.psi1.SetData(tmp1);
+        _isf.psi2.SetData(tmp2);
+        _isf.Normalize();
+    }
+
+    private void GetFluidBlockBounds(out Vector3 min, out Vector3 max)
+    {
+        min = Vector3.Min(_containerFluidMin, _containerFluidMax);
+        max = Vector3.Max(_containerFluidMin, _containerFluidMax);
+        var vmax = new Vector3(vol_size[0], vol_size[1], vol_size[2]);
+        min = Vector3.Max(min, Vector3.zero);
+        max = Vector3.Min(max, vmax);
+    }
+
+    /// <summary>Неподвижная жидкость в прямоугольнике; снаружи — пренебрежимо малый |ψ| (после нормировки — «пустота»).</summary>
+    private void InitPsiFluidBlock()
+    {
+        GetFluidBlockBounds(out Vector3 fmin, out Vector3 fmax);
+        int num = _isf.num;
+        const float eps1 = 1e-6f;
+        const float eps2 = 1e-7f;
+        var tmp1 = new Vector2[num];
+        var tmp2 = new Vector2[num];
+        for (int i = 0; i < num; i++)
+        {
+            float px = _isf.pxCPU[i], py = _isf.pyCPU[i], pz = _isf.pzCPU[i];
+            bool inside = px >= fmin.x && px <= fmax.x
+                       && py >= fmin.y && py <= fmax.y
+                       && pz >= fmin.z && pz <= fmax.z;
+            if (inside)
+            {
+                tmp1[i] = new Vector2(1f, 0f);
+                tmp2[i] = new Vector2(0.01f, 0f);
+            }
+            else
+            {
+                tmp1[i] = new Vector2(eps1, 0f);
+                tmp2[i] = new Vector2(eps2, 0f);
+            }
         }
         _isf.psi1.SetData(tmp1);
         _isf.psi2.SetData(tmp2);
@@ -523,6 +587,26 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         return buf;
     }
 
+    /// <summary>Маска стенок ёмкости: ячейки в полосе у границы домена [0, vol_size] (как у твёрдого препятствия, k=0).</summary>
+    private ComputeBuffer BuildContainerWallMask()
+    {
+        int num = _isf.num;
+        var mask = new int[num];
+        float t = Mathf.Max(0f, _containerWallThickness);
+        float wx = vol_size[0], wy = vol_size[1], wz = vol_size[2];
+        for (int i = 0; i < num; i++)
+        {
+            float px = _isf.pxCPU[i], py = _isf.pyCPU[i], pz = _isf.pzCPU[i];
+            bool wall = px < t || px > wx - t
+                     || py < t || py > wy - t
+                     || pz < t || pz > wz - t;
+            mask[i] = wall ? 1 : 0;
+        }
+        var buf = new ComputeBuffer(num, sizeof(int));
+        buf.SetData(mask);
+        return buf;
+    }
+
     private void ComputeKvecAndOmega(Vector3 vel)
     {
         _kvecX = vel.x / hbar;
@@ -562,11 +646,13 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     private void SimulationStep()
     {
         _isf.kinematicViscosity = _kinematicViscosity;
+        _isf.clampGridBorders = _scenario == ScenarioType.RectangularContainer;
         if (_scenario == ScenarioType.Cigarette)
             _isf.UpdateCigaretteSpace(_useLES, _cigaretteGravity, _maskBuf1);
         else
             _isf.UpdateSpace(_useLES,
-                _applyPsi2Gravity ? _psi2Gravity : (Vector3?)null);
+                _applyPsi2Gravity ? _psi2Gravity : (Vector3?)null,
+                _applyPsi2Gravity && _scenario == ScenarioType.RectangularContainer);
 
         if (_boundaryEachStep)
         {
@@ -592,9 +678,11 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
             SpawnNozzleParticles();
 
         _isf.UpdateVelocities(_vel);
-        _particles.CalculateMovement(_vel);
+        _particles.CalculateMovement(_vel, _scenario == ScenarioType.RectangularContainer);
 
-        if (_scenario != ScenarioType.Jet && _scenario != ScenarioType.Cigarette
+        if (_scenario == ScenarioType.RectangularContainer)
+            _particles.ClampPositionsToVolume(vol_size[0], vol_size[1], vol_size[2]);
+        else if (_scenario != ScenarioType.Jet && _scenario != ScenarioType.Cigarette
             && _scenario != ScenarioType.ObliqueRingCollision)
             _particles.WrapPositions(vol_size[0], vol_size[1], vol_size[2]);
     }
@@ -655,6 +743,28 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
             xx[i] = Random.Range(_boxSpawnX.x, _boxSpawnX.y);
             yy[i] = Random.Range(_boxSpawnY.x, _boxSpawnY.y);
             zz[i] = Random.Range(_boxSpawnZ.x, _boxSpawnZ.y);
+        }
+        _particles.AddParticles(xx, yy, zz, count);
+        _particlesCount = _particles.Size;
+    }
+
+    private void SpawnParticlesInFluidBlock(int count)
+    {
+        if (count <= 0) return;
+        GetFluidBlockBounds(out Vector3 fmin, out Vector3 fmax);
+        if (fmax.x <= fmin.x || fmax.y <= fmin.y || fmax.z <= fmin.z)
+        {
+            Debug.LogWarning("[SFUnifiedCS] RectangularContainer: блок жидкости вырожден, частицы не заспавнены.");
+            return;
+        }
+        var xx = new float[count];
+        var yy = new float[count];
+        var zz = new float[count];
+        for (int i = 0; i < count; i++)
+        {
+            xx[i] = Random.Range(fmin.x, fmax.x);
+            yy[i] = Random.Range(fmin.y, fmax.y);
+            zz[i] = Random.Range(fmin.z, fmax.z);
         }
         _particles.AddParticles(xx, yy, zz, count);
         _particlesCount = _particles.Size;
@@ -911,6 +1021,34 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         _useLES = p.useLES;
     }
 
+    public void ApplyRectangularContainerPreset(SFUnifiedRectangularContainerPreset p)
+    {
+        _scenario = ScenarioType.RectangularContainer;
+        vol_size = (int[])p.vol_size?.Clone() ?? new[] { 3, 4, 3 };
+        vol_res = (int[])p.vol_res?.Clone() ?? new[] { 64, 64, 64 };
+        hbar = p.hbar;
+        dt = p.dt;
+        _containerFluidMin = p.fluidMin;
+        _containerFluidMax = p.fluidMax;
+        _containerWallThickness = p.wallThickness;
+        _applyPsi2Gravity = p.applyPsi2Gravity;
+        _psi2Gravity = p.psi2Gravity;
+        _kinematicViscosity = p.kinematicViscosity;
+        _nParticles = p.nParticles;
+        _particleSize = p.particleSize;
+        SyncParticleDisplayScaleFromSimulation();
+        _stepsPerFrame = p.stepsPerFrame;
+        _useLES = p.useLES;
+    }
+
+    /// <summary>Параметры из SFUnifiedScenarioPresets.rectangularContainer (или встроенные при отсутствии ассета).</summary>
+    [ContextMenu("Apply Rectangular container defaults")]
+    public void ApplyRectangularContainerDefaults()
+    {
+        ApplyRectangularContainerPreset(ResolveScenarioPresets().rectangularContainer);
+        Debug.Log("[SFUnifiedCS] RectangularContainer defaults applied.");
+    }
+
     /// <summary>Параметры как в example_cigarette.hip. Задайте до входа в Play (инициализация CSISF в Start).</summary>
     [ContextMenu("Apply Cigarette (hip) defaults")]
     public void ApplyCigaretteHipDefaults()
@@ -1024,6 +1162,13 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                 Gizmos.color = new Color(0.2f, 0.8f, 0.3f, 0.6f);
                 Gizmos.DrawWireSphere(transform.position + _cigaretteHeatSphereCen,
                     _cigaretteHeatSphereRad);
+                break;
+            case ScenarioType.RectangularContainer:
+                GetFluidBlockBounds(out Vector3 fmin, out Vector3 fmax);
+                Vector3 fc = (fmin + fmax) * 0.5f;
+                Vector3 fsize = fmax - fmin;
+                Gizmos.color = new Color(0.25f, 0.55f, 1f, 0.75f);
+                Gizmos.DrawWireCube(transform.position + fc, fsize);
                 break;
         }
     }
