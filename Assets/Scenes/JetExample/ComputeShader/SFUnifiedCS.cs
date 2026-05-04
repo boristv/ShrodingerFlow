@@ -85,6 +85,12 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     [SerializeField] private Vector3 _containerFluidMax = new Vector3(2.65f, 3.55f, 2.6f);
     [Tooltip("Толщина слоя ячеек-«стенок» у границ домена (penalization), в тех же единицах, что vol_size.")]
     [SerializeField] private float _containerWallThickness = 0.1f;
+    [Tooltip("Ёмкость: разброс трассы после клампа, в долях min(Δx,Δy,Δz). Частицы без объёма иначе слепаются в одну плоскость у дна/стенок. 0 = только отступ margin от границы.")]
+    [SerializeField] private float _containerParticleTracerJitter = 0.55f;
+    [Tooltip("Поле χ (газ/жидкость): отдельная от |ψ| транспортировка и «вакуум» ψ в газе; только RectangularContainer.")]
+    [SerializeField] private bool _useLiquidChiField;
+    [Tooltip("Ячейка — жидкость, если χ ≥ порога; иначе после каждой нормировки/фазы ψ сбрасывается к вакууму.")]
+    [SerializeField, Range(0f, 1f)] private float _liquidChiThreshold = 0.5f;
 
     [Header("Cigarette — example_cigarette.hip")]
     [Tooltip("Фоновый поток U для начальной плоской волны (k = U/hbar).")]
@@ -161,6 +167,8 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         _isf = new CSISF();
         _isf.Init(_kernelsShader, _fftShader, _lesShader, vol_size, vol_res, hbar, dt);
         _isf.clampGridBorders = _scenario == ScenarioType.RectangularContainer;
+        _isf.useLiquidChiField = _scenario == ScenarioType.RectangularContainer && _useLiquidChiField;
+        _isf.liquidChiThreshold = _liquidChiThreshold;
 
         bool oneTimeParticles = _scenario == ScenarioType.LeapfrogRings
                              || _scenario == ScenarioType.ObliqueRingCollision
@@ -202,6 +210,12 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
             SyncParticleDisplayScaleFromSimulation();
         else if (!Mathf.Approximately(_particleSize, _particleSizeSyncedForDisplay))
             _particleSizeSyncedForDisplay = _particleSize;
+
+        if (_initialized && _isf != null)
+        {
+            _isf.useLiquidChiField = _scenario == ScenarioType.RectangularContainer && _useLiquidChiField;
+            _isf.liquidChiThreshold = _liquidChiThreshold;
+        }
     }
 
     private void SyncParticleDisplayScaleFromSimulation()
@@ -351,6 +365,8 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                 _kvecX = _kvecY = _kvecZ = 0f;
                 _omega = 0f;
                 RunInitBoundary(_maskBuf1, 0f, 0f, 0f, 0f, 10);
+                if (_isf.useLiquidChiField)
+                    UploadInitialLiquidChiForContainer();
                 SpawnParticlesInFluidBlock(_nParticles);
                 _particlesCount = _particles.Size;
                 _spawnEachStep = false;
@@ -387,13 +403,18 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         max = Vector3.Min(max, vmax);
     }
 
-    /// <summary>Неподвижная жидкость в прямоугольнике; снаружи — пренебрежимо малый |ψ| (после нормировки — «пустота»).</summary>
+    /// <summary>
+    /// Неподвижная жидкость в прямоугольнике (геометрия — для частиц/χ); ψ задаётся согласованно по всему домену.
+    /// Normalize делается по ячейке — модули сравниваются только внутри (ψ₁,ψ₂); снаружи нужна та же пропорция,
+    /// что внутри блока, иначе скачок составляющих даёт ложную скорость на границе (в т.ч. «улетает в сторону») без всякого χ.
+    /// </summary>
     private void InitPsiFluidBlock()
     {
         GetFluidBlockBounds(out Vector3 fmin, out Vector3 fmax);
         int num = _isf.num;
-        const float eps1 = 1e-6f;
-        const float eps2 = 1e-7f;
+        var in1 = new Vector2(1f, 0f);
+        var in2 = new Vector2(0.01f, 0f);
+        const float outsideScale = 1e-6f;
         var tmp1 = new Vector2[num];
         var tmp2 = new Vector2[num];
         for (int i = 0; i < num; i++)
@@ -404,18 +425,35 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                        && pz >= fmin.z && pz <= fmax.z;
             if (inside)
             {
-                tmp1[i] = new Vector2(1f, 0f);
-                tmp2[i] = new Vector2(0.01f, 0f);
+                tmp1[i] = in1;
+                tmp2[i] = in2;
             }
             else
             {
-                tmp1[i] = new Vector2(eps1, 0f);
-                tmp2[i] = new Vector2(eps2, 0f);
+                tmp1[i] = in1 * outsideScale;
+                tmp2[i] = in2 * outsideScale;
             }
         }
         _isf.psi1.SetData(tmp1);
         _isf.psi2.SetData(tmp2);
         _isf.Normalize();
+    }
+
+    /// <summary>χ=1 в том же AABB, что начальный блок жидкости; χ=0 в газе (несжимаемая «пустота» в терминах ψ задаётся яхром в CSISF).</summary>
+    private void UploadInitialLiquidChiForContainer()
+    {
+        GetFluidBlockBounds(out Vector3 fmin, out Vector3 fmax);
+        int n = _isf.num;
+        var chi = new float[n];
+        for (int i = 0; i < n; i++)
+        {
+            float px = _isf.pxCPU[i], py = _isf.pyCPU[i], pz = _isf.pzCPU[i];
+            bool inside = px >= fmin.x && px <= fmax.x
+                       && py >= fmin.y && py <= fmax.y
+                       && pz >= fmin.z && pz <= fmax.z;
+            chi[i] = inside ? 1f : 0f;
+        }
+        _isf.UploadLiquidChi(chi);
     }
 
     private void InitPsiWithPhase()
@@ -647,6 +685,7 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     {
         _isf.kinematicViscosity = _kinematicViscosity;
         _isf.clampGridBorders = _scenario == ScenarioType.RectangularContainer;
+        _isf.liquidChiThreshold = _liquidChiThreshold;
         if (_scenario == ScenarioType.Cigarette)
             _isf.UpdateCigaretteSpace(_useLES, _cigaretteGravity, _maskBuf1);
         else
@@ -678,10 +717,13 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
             SpawnNozzleParticles();
 
         _isf.UpdateVelocities(_vel);
+        if (_isf.useLiquidChiField)
+            _isf.AdvectLiquidChi(_vel);
         _particles.CalculateMovement(_vel, _scenario == ScenarioType.RectangularContainer);
 
         if (_scenario == ScenarioType.RectangularContainer)
-            _particles.ClampPositionsToVolume(vol_size[0], vol_size[1], vol_size[2]);
+            _particles.ClampPositionsToVolume(vol_size[0], vol_size[1], vol_size[2],
+                _containerParticleTracerJitter, iterator);
         else if (_scenario != ScenarioType.Jet && _scenario != ScenarioType.Cigarette
             && _scenario != ScenarioType.ObliqueRingCollision)
             _particles.WrapPositions(vol_size[0], vol_size[1], vol_size[2]);
@@ -1039,6 +1081,8 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         SyncParticleDisplayScaleFromSimulation();
         _stepsPerFrame = p.stepsPerFrame;
         _useLES = p.useLES;
+        _useLiquidChiField = p.useLiquidChiField;
+        _liquidChiThreshold = p.liquidChiThreshold;
     }
 
     /// <summary>Параметры из SFUnifiedScenarioPresets.rectangularContainer (или встроенные при отсутствии ассета).</summary>

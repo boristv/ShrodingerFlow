@@ -160,7 +160,9 @@ public class SFUnifiedScenarioPresets : ScriptableObject
             nParticles = 80000,
             particleSize = 0.06f,
             stepsPerFrame = 2,
-            useLES = true
+            useLES = true,
+            useLiquidChiField = true,
+            liquidChiThreshold = 0.5f
         };
     }
 

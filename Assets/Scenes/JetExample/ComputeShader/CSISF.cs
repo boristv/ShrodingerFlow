@@ -19,6 +19,12 @@ namespace ComputeShaderSF
         /// </summary>
         public bool clampGridBorders;
 
+        /// <summary>Маркер жидкости χ∈[0,1] на сетке: адвекция по u и «вакуум» ψ в газе (отдельно от нормировки |ψ| по ячейке).</summary>
+        public bool useLiquidChiField;
+
+        /// <summary>Ячейки с χ ниже порога — газ; в них ψ принудительно подменяется на малый вакуум после нормировки и фазовых шагов.</summary>
+        public float liquidChiThreshold = 0.5f;
+
         public float[] pxCPU, pyCPU, pzCPU;
         public ComputeBuffer psi1, psi2;
 
@@ -35,6 +41,15 @@ namespace ComputeShaderSF
         private int _copyR2CK, _fftNormK, _velOneK;
         private int _staggeredK, _divK, _jetK;
         private int _gravK, _heatK;
+        private int _advectLiquidChiK, _gasVacuumPsiK;
+        private int _maskVelChiK;
+        private int _sumHorizVelK, _subHorizMeanK;
+
+        private ComputeBuffer _liquidChi;
+        private ComputeBuffer _liquidChiTemp;
+        private ComputeBuffer _partialVelXZSum;
+        private Vector2[] _partialVelXZCpu;
+        private int _velHorizMeanGroupCount;
 
         public void Init(ComputeShader kernels, ComputeShader fftShader,
             ComputeShader lesShader, int[] volSize, int[] volRes, float hbar, float dt)
@@ -74,6 +89,11 @@ namespace ComputeShaderSF
             _jetK = kernels.FindKernel("ApplyJetBoundary");
             _gravK = kernels.FindKernel("GravityPsi2");
             _heatK = kernels.FindKernel("HeatSinkPsi1");
+            _advectLiquidChiK = kernels.FindKernel("AdvectLiquidChi");
+            _gasVacuumPsiK = kernels.FindKernel("ApplyGasVacuumPsi");
+            _maskVelChiK = kernels.FindKernel("MaskVelocityByLiquidChi");
+            _sumHorizVelK = kernels.FindKernel("SumHorizontalVelocityPartial");
+            _subHorizMeanK = kernels.FindKernel("SubtractHorizontalVelocityMean");
 
             psi1 = new ComputeBuffer(num, sizeof(float) * 2);
             psi2 = new ComputeBuffer(num, sizeof(float) * 2);
@@ -90,6 +110,12 @@ namespace ComputeShaderSF
             _velFiltered = new CSVelocity(resX, resY, resZ);
             _velTemp = new CSVelocity(resX, resY, resZ);
 
+            _liquidChi = new ComputeBuffer(num, sizeof(float));
+            _liquidChiTemp = new ComputeBuffer(num, sizeof(float));
+
+            _velHorizMeanGroupCount = (num + 255) / 256;
+            _partialVelXZSum = new ComputeBuffer(_velHorizMeanGroupCount, sizeof(float) * 2);
+            _partialVelXZCpu = new Vector2[_velHorizMeanGroupCount];
             _fft = new CSFFT();
             _fft.Init(fftShader, resX, resY, resZ);
 
@@ -193,6 +219,109 @@ namespace ComputeShaderSF
             _kernels.Dispatch(_normalizeK, Groups1D, 1, 1);
         }
 
+        /// <summary>Текущее поле χ (после последней адвекции); null, если <see cref="useLiquidChiField"/> выключен — для визуализации.</summary>
+        public ComputeBuffer LiquidChiBuffer => useLiquidChiField ? _liquidChi : null;
+
+        /// <summary>Загрузить χ на GPU; копия и во временный буфер для первого шага адвекции.</summary>
+        public void UploadLiquidChi(float[] chi)
+        {
+            if (chi == null || chi.Length != num)
+                throw new ArgumentException($"[CSISF] UploadLiquidChi: ожидалось {num} значений.", nameof(chi));
+            _liquidChi.SetData(chi);
+            _liquidChiTemp.SetData(chi);
+        }
+
+        /// <summary>
+        /// Адвекция χ полулагранжевски по уже замаскированному u (после <see cref="UpdateVelocities"/> того же подшага),
+        /// чтобы χ^n → χ^{n+1} к началу следующего подшага; CFL ограничен в шейдере.
+        /// </summary>
+        public void AdvectLiquidChi(CSVelocity vel)
+        {
+            if (!useLiquidChiField)
+                return;
+            SetCommonUniforms();
+            _kernels.SetFloat("_DT", dt);
+            _kernels.SetFloat("_BoundX", sizeX);
+            _kernels.SetFloat("_BoundY", sizeY);
+            _kernels.SetFloat("_BoundZ", sizeZ);
+            _kernels.SetBuffer(_advectLiquidChiK, "_ChiIn", _liquidChi);
+            _kernels.SetBuffer(_advectLiquidChiK, "_ChiOut", _liquidChiTemp);
+            _kernels.SetBuffer(_advectLiquidChiK, "_VX", vel.vx);
+            _kernels.SetBuffer(_advectLiquidChiK, "_VY", vel.vy);
+            _kernels.SetBuffer(_advectLiquidChiK, "_VZ", vel.vz);
+            _kernels.SetBuffer(_advectLiquidChiK, "_PX", _px);
+            _kernels.SetBuffer(_advectLiquidChiK, "_PY", _py);
+            _kernels.SetBuffer(_advectLiquidChiK, "_PZ", _pz);
+            _kernels.Dispatch(_advectLiquidChiK, Groups1D, 1, 1);
+            var swap = _liquidChi;
+            _liquidChi = _liquidChiTemp;
+            _liquidChiTemp = swap;
+        }
+
+        private void ApplyGasVacuumFromChi()
+        {
+            if (!useLiquidChiField)
+                return;
+            SetCommonUniforms();
+            _kernels.SetFloat("_ChiLiqThreshold", liquidChiThreshold);
+            const float e1 = 1e-6f, e2 = 1e-7f;
+            _kernels.SetFloat("_Vac1R", e1);
+            _kernels.SetFloat("_Vac1I", 0f);
+            _kernels.SetFloat("_Vac2R", e2);
+            _kernels.SetFloat("_Vac2I", 0f);
+            _kernels.SetBuffer(_gasVacuumPsiK, "_ChiField", _liquidChi);
+            _kernels.SetBuffer(_gasVacuumPsiK, "_Psi1", psi1);
+            _kernels.SetBuffer(_gasVacuumPsiK, "_Psi2", psi2);
+            _kernels.Dispatch(_gasVacuumPsiK, Groups1D, 1, 1);
+        }
+
+        /// <summary>
+        /// Обнуляет компоненты u, если соответствующая разность ψ тянется через «газ» (низкий χ).
+        /// Иначе |ψ_жидк|≫|ψ_газ| после нормировки + вакуума даёт взрывные фазовые градиенты и унос χ/частиц.
+        /// </summary>
+        private void MaskVelocityByLiquidChi(CSVelocity v)
+        {
+            if (!useLiquidChiField)
+                return;
+            SetCommonUniforms();
+            _kernels.SetFloat("_ChiLiqThreshold", liquidChiThreshold);
+            _kernels.SetBuffer(_maskVelChiK, "_ChiField", _liquidChi);
+            _kernels.SetBuffer(_maskVelChiK, "_VX", v.vx);
+            _kernels.SetBuffer(_maskVelChiK, "_VY", v.vy);
+            _kernels.SetBuffer(_maskVelChiK, "_VZ", v.vz);
+            _kernels.Dispatch(_maskVelChiK, Groups1D, 1, 1);
+        }
+
+        /// <summary>
+        /// При непериодических границах VelocityOne даёт несимметричный шаблон (ix=0 vs ix=ResX-1) → ненулевое среднее Vx/Vz и дрейф «вбок».
+        /// Снимаем постоянную составляющую по X и Z (по Y не трогаем — гравитация). Только при <see cref="clampGridBorders"/>.
+        /// </summary>
+        private void RemoveMeanHorizontalVelocity(CSVelocity v)
+        {
+            if (!clampGridBorders)
+                return;
+            SetCommonUniforms();
+            _kernels.SetBuffer(_sumHorizVelK, "_VX", v.vx);
+            _kernels.SetBuffer(_sumHorizVelK, "_VZ", v.vz);
+            _kernels.SetBuffer(_sumHorizVelK, "_PartialVelXZSum", _partialVelXZSum);
+            _kernels.Dispatch(_sumHorizVelK, _velHorizMeanGroupCount, 1, 1);
+
+            _partialVelXZSum.GetData(_partialVelXZCpu);
+            double sx = 0.0, sz = 0.0;
+            for (int i = 0; i < _velHorizMeanGroupCount; i++)
+            {
+                sx += _partialVelXZCpu[i].x;
+                sz += _partialVelXZCpu[i].y;
+            }
+            float mx = (float)(sx / num);
+            float mz = (float)(sz / num);
+            _kernels.SetFloat("_MeanSubX", mx);
+            _kernels.SetFloat("_MeanSubZ", mz);
+            _kernels.SetBuffer(_subHorizMeanK, "_VX", v.vx);
+            _kernels.SetBuffer(_subHorizMeanK, "_VZ", v.vz);
+            _kernels.Dispatch(_subHorizMeanK, Groups1D, 1, 1);
+        }
+
         private void SchoedingerFlow()
         {
             SetCommonUniforms();
@@ -235,9 +364,13 @@ namespace ComputeShaderSF
             _kernels.Dispatch(_fftNormK, Groups1D, 1, 1);
         }
 
+        /// <summary>
+        /// Скорость из градиента фазы Madelunga: множитель должен совпадать с ℏ во всех местах (LES, PP, частицы).
+        /// Раньше здесь было 1.0 — проекция давления видела поле в ~1/ℏ раз «не то», чем то, что извлекается для частиц → поломанный gauge и дрейф (в т.ч. вбок).
+        /// </summary>
         private void VelocityOneForm(CSVelocity v)
         {
-            VelocityOneForm(v, 1.0f);
+            VelocityOneForm(v, hbar);
         }
 
         private void VelocityOneForm(CSVelocity v, float h)
@@ -307,15 +440,20 @@ namespace ComputeShaderSF
         public void PressureProject()
         {
             VelocityOneForm(_velTemp);
+            MaskVelocityByLiquidChi(_velTemp);
+            RemoveMeanHorizontalVelocity(_velTemp);
             PressureProject(_velTemp);
         }
 
         private void LESStep()
         {
             VelocityOneForm(_velCurrent);
+            MaskVelocityByLiquidChi(_velCurrent);
             _les.Filter(_velCurrent, _velFiltered, dx, dy, dz);
             _les.ComputeNuT(_velFiltered, dx, dy, dz, Cs, filterFac);
             _les.ApplyViscosity(_velCurrent, dx, dy, dz, dt, kinematicViscosity, 1f);
+            MaskVelocityByLiquidChi(_velCurrent);
+            RemoveMeanHorizontalVelocity(_velCurrent);
         }
 
         private void LaminarViscosityStep()
@@ -323,7 +461,10 @@ namespace ComputeShaderSF
             if (kinematicViscosity <= 1e-20f)
                 return;
             VelocityOneForm(_velCurrent);
+            MaskVelocityByLiquidChi(_velCurrent);
             _les.ApplyViscosity(_velCurrent, dx, dy, dz, dt, kinematicViscosity, 0f);
+            MaskVelocityByLiquidChi(_velCurrent);
+            RemoveMeanHorizontalVelocity(_velCurrent);
         }
 
         private bool UsesVelocityFieldViscosity =>
@@ -343,13 +484,16 @@ namespace ComputeShaderSF
             else
                 LaminarViscosityStep();
             Normalize();
+            ApplyGasVacuumFromChi();
             if (gravityPsi2.HasValue && gravityPsi2.Value.sqrMagnitude > 1e-20f)
                 ApplyGravityPsi2(gravityPsi2.Value, gravityRotatePsi1Too);
+            ApplyGasVacuumFromChi();
             bool ppFromVel = useLES || UsesVelocityFieldViscosity;
             if (ppFromVel)
                 PressureProject(_velCurrent);
             else
                 PressureProject();
+            ApplyGasVacuumFromChi();
         }
 
         /// <summary>
@@ -365,18 +509,23 @@ namespace ComputeShaderSF
             else
                 LaminarViscosityStep();
             Normalize();
+            ApplyGasVacuumFromChi();
             ApplyGravityPsi2(gravityG);
+            ApplyGasVacuumFromChi();
             bool ppFromVel = useLES || UsesVelocityFieldViscosity;
             if (ppFromVel)
                 PressureProject(_velCurrent);
             else
                 PressureProject();
+            ApplyGasVacuumFromChi();
             ApplyHeatSinkPsi1(isJetMask);
             Normalize();
+            ApplyGasVacuumFromChi();
             if (ppFromVel)
                 PressureProject(_velCurrent);
             else
                 PressureProject();
+            ApplyGasVacuumFromChi();
         }
 
         private void ApplyGravityPsi2(Vector3 g, bool rotatePsi1Too = false)
@@ -405,8 +554,10 @@ namespace ComputeShaderSF
 
         public void UpdateVelocities(CSVelocity vel)
         {
-            VelocityOneForm(vel, hbar);
+            VelocityOneForm(vel);
             StaggeredSharp(vel);
+            MaskVelocityByLiquidChi(vel);
+            RemoveMeanHorizontalVelocity(vel);
         }
 
         public void ApplyJetBoundary(ComputeBuffer isJet,
@@ -441,6 +592,9 @@ namespace ComputeShaderSF
             _velCurrent?.Dispose();
             _velFiltered?.Dispose();
             _velTemp?.Dispose();
+            _liquidChi?.Release();
+            _liquidChiTemp?.Release();
+            _partialVelXZSum?.Release();
             _les?.Dispose();
         }
     }

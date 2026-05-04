@@ -158,11 +158,11 @@ MonoBehaviour:
   _particlesShader: {fileID: 7200000, guid: 2894e3a1b59434c4f8a90079f8036355, type: 3}
   _lesShader: {fileID: 7200000, guid: de57605fec55e4a0096a1b3240cc595b, type: 3}
   _scenarioPresetsOverride: {fileID: 0}
-  _scenario: 0
-  vol_size: 040000000200000002000000
-  vol_res: 800000004000000040000000
-  hbar: 0.02
-  dt: 0.020833334
+  _scenario: 8
+  vol_size: 030000000400000003000000
+  vol_res: 400000004000000040000000
+  hbar: 0.05
+  dt: 0.041666668
   _velocity: {x: 1, y: 0, z: 0}
   _nozzleCen: {x: 0.3, y: 0.9656632, z: 1.0659939}
   _nozzleLen: 0.5
@@ -181,19 +181,26 @@ MonoBehaviour:
   _obliqueRing2Normal: {x: 0, y: 0, z: 1}
   _obliqueRingRadius: 0.6
   _obliquePsi2Re: 0.05
+  _containerFluidMin: {x: 0.35, y: 2.2, z: 0.4}
+  _containerFluidMax: {x: 2.65, y: 3.55, z: 2.6}
+  _containerWallThickness: 0.1
+  _containerParticleTracerJitter: 0
+  _useLiquidChiField: 0
+  _liquidChiThreshold: 0.5
   _cigaretteBackgroundU: {x: 0.1, y: 0, z: 0}
   _cigaretteJet: {x: 0, y: 1, z: 0}
   _cigaretteGravity: {x: 0, y: 1, z: 0}
   _cigaretteHeatSphereCen: {x: 1, y: 0.5, z: 1.6127148}
   _cigaretteHeatSphereRad: 0.2
-  _nParticles: 50
-  _particleSize: 0.05
+  _nParticles: 80000
+  _particleSize: 0.06
   _boxSpawnX: {x: 0.5, y: 4.5}
   _boxSpawnY: {x: 0.5, y: 4.5}
   _boxSpawnZ: {x: 0.5, y: 4.5}
-  _applyPsi2Gravity: 0
-  _psi2Gravity: {x: 0, y: 1, z: 0}
+  _applyPsi2Gravity: 1
+  _psi2Gravity: {x: 0, y: -4, z: 0}
   _useLES: 0
+  _kinematicViscosity: 0.0002
   _paused: 0
   _stepsPerFrame: 1
 --- !u!4 &362555268

@@ -67,7 +67,16 @@ void InterpolateVelocity(uint3 id : SV_DispatchThreadID)
     int i = (int)id.x;
     if (i >= _ParticleCount) return;
 
-    float sh_x = _ShiftX[i] * _ShiftFactor;
+    float sh_x = 0.0;
+    float sh_y = 0.0;
+    float sh_z = 0.0;
+    if (abs(_ShiftFactor) > 1e-8)
+    {
+        sh_x = _ShiftX[i] * _ShiftFactor;
+        sh_y = _ShiftY[i] * _ShiftFactor;
+        sh_z = _ShiftZ[i] * _ShiftFactor;
+    }
+
     float cell_x = (_PosX[i] + sh_x) / _TorDX;
     int ix, ixp;
     float wx;
@@ -83,7 +92,6 @@ void InterpolateVelocity(uint3 id : SV_DispatchThreadID)
         ixp = (ix + 1) % _TorResX;
     }
 
-    float sh_y = _ShiftY[i] * _ShiftFactor;
     float cell_y = (_PosY[i] + sh_y) / _TorDY;
     int iy, iyp;
     float wy;
@@ -99,7 +107,6 @@ void InterpolateVelocity(uint3 id : SV_DispatchThreadID)
         iyp = (iy + 1) % _TorResY;
     }
 
-    float sh_z = _ShiftZ[i] * _ShiftFactor;
     float cell_z = (_PosZ[i] + sh_z) / _TorDZ;
     int iz, izp;
     float wz;
@@ -148,6 +155,9 @@ void RK4Update(uint3 id : SV_DispatchThreadID)
 float _VolSizeX;
 float _VolSizeY;
 float _VolSizeZ;
+float _ClampMargin;
+float _JitterSigma;
+uint _JitterSeed;
 
 [numthreads(256, 1, 1)]
 void WrapPositions(uint3 id : SV_DispatchThreadID)
@@ -174,7 +184,36 @@ void ClampPositionsToVolume(uint3 id : SV_DispatchThreadID)
     int i = (int)id.x;
     if (i >= _ParticleCount) return;
 
-    _PosX[i] = clamp(_PosX[i], 0.0, _VolSizeX);
-    _PosY[i] = clamp(_PosY[i], 0.0, _VolSizeY);
-    _PosZ[i] = clamp(_PosZ[i], 0.0, _VolSizeZ);
+    float mx = _ClampMargin;
+    float my = _ClampMargin;
+    float mz = _ClampMargin;
+
+    float oldX = _PosX[i];
+    float oldY = _PosY[i];
+    float oldZ = _PosZ[i];
+    float clampedX = clamp(oldX, mx, _VolSizeX - mx);
+    float clampedY = clamp(oldY, my, _VolSizeY - my);
+    float clampedZ = clamp(oldZ, mz, _VolSizeZ - mz);
+    bool wasClamped = abs(clampedX - oldX) > 1e-6
+                   || abs(clampedY - oldY) > 1e-6
+                   || abs(clampedZ - oldZ) > 1e-6;
+
+    _PosX[i] = clampedX;
+    _PosY[i] = clampedY;
+    _PosZ[i] = clampedZ;
+
+    if (wasClamped && _JitterSigma > 0.0) {
+        uint s = _JitterSeed + (uint)i * 1664525u + 1013904223u;
+        float rx = frac(sin(float(s)) * 43758.5453);
+        s = s * 1103515245u + 12345u;
+        float ry = frac(sin(float(s)) * 43758.5453);
+        s = s * 1103515245u + 12345u;
+        float rz = frac(sin(float(s)) * 43758.5453);
+        _PosX[i] += _JitterSigma * (rx * 2.0 - 1.0);
+        _PosY[i] += _JitterSigma * (ry * 2.0 - 1.0);
+        _PosZ[i] += _JitterSigma * (rz * 2.0 - 1.0);
+        _PosX[i] = clamp(_PosX[i], mx, _VolSizeX - mx);
+        _PosY[i] = clamp(_PosY[i], my, _VolSizeY - my);
+        _PosZ[i] = clamp(_PosZ[i], mz, _VolSizeZ - mz);
+    }
 }

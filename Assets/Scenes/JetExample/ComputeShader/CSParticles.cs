@@ -192,10 +192,22 @@ namespace ComputeShaderSF
             _shader.Dispatch(_wrapKernel, (_size + 255) / 256, 1, 1);
         }
 
-        /// <summary>Периодические границы выключены — частицы остаются внутри <c>[0, vol]</c> (ёмкость).</summary>
-        public void ClampPositionsToVolume(float volSizeX, float volSizeY, float volSizeZ)
+        /// <param name="jitterSigmaInCells">Множитель к min(dx,dy,dz): лёгкий разброс после клампа (трассы без объёма не давят друг друга).</param>
+        public void ClampPositionsToVolume(float volSizeX, float volSizeY, float volSizeZ,
+            float jitterSigmaInCells = 0f, int jitterSeed = 0)
         {
             if (_size == 0) return;
+            float mcell = Mathf.Min(_torDX, Mathf.Min(_torDY, _torDZ));
+            float margin = Mathf.Max(1e-5f, 0.35f * mcell);
+            float halfMin = 0.5f * Mathf.Min(volSizeX, Mathf.Min(volSizeY, volSizeZ));
+            if (margin >= halfMin - 1e-4f)
+                margin = Mathf.Max(1e-5f, 0.2f * halfMin);
+            float jitter = jitterSigmaInCells > 0f ? jitterSigmaInCells * mcell : 0f;
+
+            _shader.SetFloat("_ClampMargin", margin);
+            _shader.SetFloat("_JitterSigma", jitter);
+            _shader.SetInt("_JitterSeed", jitterSeed);
+
             _shader.SetInt("_ParticleCount", _size);
             _shader.SetFloat("_VolSizeX", volSizeX);
             _shader.SetFloat("_VolSizeY", volSizeY);

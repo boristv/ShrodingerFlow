@@ -125,4 +125,6 @@ public struct SFUnifiedRectangularContainerPreset
     public float particleSize;
     public int stepsPerFrame;
     public bool useLES;
+    public bool useLiquidChiField;
+    public float liquidChiThreshold;
 }
