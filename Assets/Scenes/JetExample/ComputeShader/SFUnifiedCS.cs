@@ -31,6 +31,8 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     [SerializeField] private ComputeShader _kernelsShader;
     [SerializeField] private ComputeShader _fftShader;
     [SerializeField] private ComputeShader _particlesShader;
+    [Tooltip("Отдельный compute с ConstrainParticlesToLiquidChi. Для ёмкости+χ в Editor подставляется из папки, если поле пустое; для билда перетащите SFComputeParticlesChiConstrain.")]
+    [SerializeField] private ComputeShader _particlesChiConstrainShader;
     [SerializeField] private ComputeShader _lesShader;
 
     [Header("Пресеты (контекстное меню Apply Scenario Defaults)")]
@@ -161,6 +163,23 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
 
     public float SimulationParticleSize => _particleSize;
 
+#if UNITY_EDITOR
+    private const string ParticlesChiConstrainAssetPath =
+        "Assets/Scenes/JetExample/ComputeShader/SFComputeParticlesChiConstrain.compute";
+#endif
+
+    /// <summary>Подтяжка трассеров к χ: отдельный compute-asset, не смешиваем с основным шейдером частиц (Metal/CB).</summary>
+    private ComputeShader ResolveParticlesChiConstrainShader()
+    {
+        if (_particlesChiConstrainShader != null)
+            return _particlesChiConstrainShader;
+#if UNITY_EDITOR
+        if (_scenario == ScenarioType.RectangularContainer && _useLiquidChiField)
+            return AssetDatabase.LoadAssetAtPath<ComputeShader>(ParticlesChiConstrainAssetPath);
+#endif
+        return null;
+    }
+
     #region Lifecycle
 
     private void Start()
@@ -182,7 +201,7 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         int maxParticles = oneTimeParticles ? _nParticles : _nParticles * 1000;
 
         _particles = new CSParticles();
-        _particles.Init(_particlesShader, maxParticles, _isf);
+        _particles.Init(_particlesShader, maxParticles, _isf, ResolveParticlesChiConstrainShader());
 
         _vel = new CSVelocity(_isf.resX, _isf.resY, _isf.resZ);
 

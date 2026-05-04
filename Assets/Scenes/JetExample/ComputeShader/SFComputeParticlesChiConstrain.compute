@@ -1,0 +1,117 @@
+// Отдельный asset: подтяжка трассеров к χ. Основной SFComputeParticles.compute не трогать —
+// иначе ломается раскладка CBUF на части платформ (Jet, кольца и т.д.).
+#pragma kernel ConstrainParticlesToLiquidChi
+
+RWStructuredBuffer<float> _PosX;
+RWStructuredBuffer<float> _PosY;
+RWStructuredBuffer<float> _PosZ;
+
+StructuredBuffer<float>   _LiquidChi;
+
+int   _ParticleCount;
+int   _TorResX;
+int   _TorResY;
+int   _TorResZ;
+float _TorDX;
+float _TorDY;
+float _TorDZ;
+
+float _ChiThresholdParticles;
+float _ChiConstrainStrength;
+float _ChiConstrainSoftMargin;
+float3 _ChiGravityDir;
+float _ChiGravityScale;
+
+float SampleChiTrilinear(float3 worldPos)
+{
+    float cell_x = clamp(worldPos.x / _TorDX, 0.0, (float)_TorResX - 1e-5);
+    int ix = (int)floor(cell_x);
+    float wx = cell_x - (float)ix;
+    int ixp = min(ix + 1, _TorResX - 1);
+
+    float cell_y = clamp(worldPos.y / _TorDY, 0.0, (float)_TorResY - 1e-5);
+    int iy = (int)floor(cell_y);
+    float wy = cell_y - (float)iy;
+    int iyp = min(iy + 1, _TorResY - 1);
+
+    float cell_z = clamp(worldPos.z / _TorDZ, 0.0, (float)_TorResZ - 1e-5);
+    int iz = (int)floor(cell_z);
+    float wz = cell_z - (float)iz;
+    int izp = min(iz + 1, _TorResZ - 1);
+
+    int r2 = _TorResZ;
+    int r21 = _TorResZ * _TorResY;
+
+    float c000 = _LiquidChi[ix * r21 + iy * r2 + iz];
+    float c100 = _LiquidChi[ixp * r21 + iy * r2 + iz];
+    float c010 = _LiquidChi[ix * r21 + iyp * r2 + iz];
+    float c110 = _LiquidChi[ixp * r21 + iyp * r2 + iz];
+    float c001 = _LiquidChi[ix * r21 + iy * r2 + izp];
+    float c101 = _LiquidChi[ixp * r21 + iy * r2 + izp];
+    float c011 = _LiquidChi[ix * r21 + iyp * r2 + izp];
+    float c111 = _LiquidChi[ixp * r21 + iyp * r2 + izp];
+
+    return (1.0 - wz) * ((1.0 - wy) * ((1.0 - wx) * c000 + wx * c100)
+                                    + wy * ((1.0 - wx) * c010 + wx * c110))
+         + wz  * ((1.0 - wy) * ((1.0 - wx) * c001 + wx * c101)
+                                    + wy * ((1.0 - wx) * c011 + wx * c111));
+}
+
+float SampleChiGateYSmooth(float3 worldPos, float dy)
+{
+    return (SampleChiTrilinear(worldPos + float3(0.0, dy, 0.0))
+        + SampleChiTrilinear(worldPos)
+        + SampleChiTrilinear(worldPos - float3(0.0, dy, 0.0))) * (1.0 / 3.0);
+}
+
+[numthreads(256, 1, 1)]
+void ConstrainParticlesToLiquidChi(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+
+    float strength = saturate(_ChiConstrainStrength);
+    if (strength < 1e-8)
+        return;
+
+    float3 p = float3(_PosX[i], _PosY[i], _PosZ[i]);
+    float mcell = min(_TorDX, min(_TorDY, _TorDZ));
+    float chiP = SampleChiGateYSmooth(p, 0.35 * mcell);
+    float marginIn = max(_ChiConstrainSoftMargin, 0.08);
+    float margin = min(marginIn, max(_ChiThresholdParticles - 0.03, 0.05));
+    float relaxLow = max(_ChiThresholdParticles - margin, 0.0);
+    if (chiP >= relaxLow)
+        return;
+
+    float ramp = saturate((relaxLow - chiP) / max(margin, 1e-5));
+
+    float h = 0.5 * mcell;
+    h = max(h, 1e-6);
+    float3 ex = float3(h, 0.0, 0.0);
+    float3 ey = float3(0.0, h, 0.0);
+    float3 ez = float3(0.0, 0.0, h);
+
+    float3 grad = float3(
+        SampleChiTrilinear(p + ex) - SampleChiTrilinear(p - ex),
+        SampleChiTrilinear(p + ey) - SampleChiTrilinear(p - ey),
+        SampleChiTrilinear(p + ez) - SampleChiTrilinear(p - ez)) / (2.0 * h);
+
+    float3 gravTerm = _ChiGravityDir * _ChiGravityScale;
+    float gradLen2 = dot(grad, grad);
+    if (gradLen2 < 1e-20)
+        gravTerm = 0.0;
+    else if (dot(grad, gravTerm) < 0.0)
+        gravTerm = 0.0;
+
+    float3 raw = grad + gravTerm;
+    float lenRaw = length(raw);
+    if (lenRaw < 1e-12)
+        return;
+
+    float stepLen = min(strength * 0.45 * mcell * ramp, 0.32 * mcell);
+    p += (raw / lenRaw) * stepLen;
+
+    _PosX[i] = p.x;
+    _PosY[i] = p.y;
+    _PosZ[i] = p.z;
+}

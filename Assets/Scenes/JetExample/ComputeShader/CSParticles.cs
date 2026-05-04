@@ -6,6 +6,7 @@ namespace ComputeShaderSF
     public class CSParticles : IDisposable
     {
         private ComputeShader _shader;
+        private ComputeShader _chiConstrainShader;
         private int _addKernel, _interpKernel, _rk4Kernel, _wrapKernel, _clampKernel;
         private int _constrainLiquidChiKernel;
 
@@ -25,9 +26,12 @@ namespace ComputeShaderSF
         private int _torResX, _torResY, _torResZ;
         private float _torDX, _torDY, _torDZ;
 
-        public void Init(ComputeShader shader, int maxParticles, CSISF isf)
+        /// <param name="chiConstrainShader">Опционально: отдельный compute только с <c>ConstrainParticlesToLiquidChi</c> (не смешивать с основным шейдером частиц).</param>
+        public void Init(ComputeShader shader, int maxParticles, CSISF isf,
+            ComputeShader chiConstrainShader = null)
         {
             _shader = shader;
+            _chiConstrainShader = chiConstrainShader;
             _maxCnt = maxParticles;
             _size = 0;
 
@@ -36,9 +40,11 @@ namespace ComputeShaderSF
             _rk4Kernel = shader.FindKernel("RK4Update");
             _wrapKernel = shader.FindKernel("WrapPositions");
             _clampKernel = shader.FindKernel("ClampPositionsToVolume");
-            _constrainLiquidChiKernel = shader.HasKernel("ConstrainParticlesToLiquidChi")
-                ? shader.FindKernel("ConstrainParticlesToLiquidChi")
-                : -1;
+
+            _constrainLiquidChiKernel = -1;
+            if (_chiConstrainShader != null
+                && _chiConstrainShader.HasKernel("ConstrainParticlesToLiquidChi"))
+                _constrainLiquidChiKernel = _chiConstrainShader.FindKernel("ConstrainParticlesToLiquidChi");
 
             _x = new ComputeBuffer(maxParticles, sizeof(float));
             _y = new ComputeBuffer(maxParticles, sizeof(float));
@@ -229,21 +235,28 @@ namespace ComputeShaderSF
             float strength = 0f, Vector3 gravityDir = default, float gravityTermPerCell = 0f,
             float chiSoftMargin = 0.1f)
         {
-            if (_size == 0 || liquidChi == null || _constrainLiquidChiKernel < 0) return;
+            if (_size == 0 || liquidChi == null || _constrainLiquidChiKernel < 0
+                || _chiConstrainShader == null)
+                return;
 
-            SetTorusUniforms();
-            _shader.SetInt("_ParticleCount", _size);
-            _shader.SetFloat("_ChiThresholdParticles", threshold);
-            _shader.SetFloat("_ChiConstrainStrength", Mathf.Clamp01(strength));
+            _chiConstrainShader.SetInt("_TorResX", _torResX);
+            _chiConstrainShader.SetInt("_TorResY", _torResY);
+            _chiConstrainShader.SetInt("_TorResZ", _torResZ);
+            _chiConstrainShader.SetFloat("_TorDX", _torDX);
+            _chiConstrainShader.SetFloat("_TorDY", _torDY);
+            _chiConstrainShader.SetFloat("_TorDZ", _torDZ);
+            _chiConstrainShader.SetInt("_ParticleCount", _size);
+            _chiConstrainShader.SetFloat("_ChiThresholdParticles", threshold);
+            _chiConstrainShader.SetFloat("_ChiConstrainStrength", Mathf.Clamp01(strength));
             float maxMargin = Mathf.Max(0f, threshold - 0.03f);
-            _shader.SetFloat("_ChiConstrainSoftMargin", Mathf.Clamp(chiSoftMargin, 0.05f, maxMargin));
-            _shader.SetVector("_ChiGravityDir", gravityDir);
-            _shader.SetFloat("_ChiGravityScale", gravityTermPerCell);
-            _shader.SetBuffer(_constrainLiquidChiKernel, "_PosX", _x);
-            _shader.SetBuffer(_constrainLiquidChiKernel, "_PosY", _y);
-            _shader.SetBuffer(_constrainLiquidChiKernel, "_PosZ", _z);
-            _shader.SetBuffer(_constrainLiquidChiKernel, "_LiquidChi", liquidChi);
-            _shader.Dispatch(_constrainLiquidChiKernel, (_size + 255) / 256, 1, 1);
+            _chiConstrainShader.SetFloat("_ChiConstrainSoftMargin", Mathf.Clamp(chiSoftMargin, 0.05f, maxMargin));
+            _chiConstrainShader.SetVector("_ChiGravityDir", gravityDir);
+            _chiConstrainShader.SetFloat("_ChiGravityScale", gravityTermPerCell);
+            _chiConstrainShader.SetBuffer(_constrainLiquidChiKernel, "_PosX", _x);
+            _chiConstrainShader.SetBuffer(_constrainLiquidChiKernel, "_PosY", _y);
+            _chiConstrainShader.SetBuffer(_constrainLiquidChiKernel, "_PosZ", _z);
+            _chiConstrainShader.SetBuffer(_constrainLiquidChiKernel, "_LiquidChi", liquidChi);
+            _chiConstrainShader.Dispatch(_constrainLiquidChiKernel, (_size + 255) / 256, 1, 1);
         }
 
         public void ReadPositions(float[] outX, float[] outY, float[] outZ)
