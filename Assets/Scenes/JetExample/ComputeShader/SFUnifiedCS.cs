@@ -29,10 +29,14 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
 
     [Header("Compute Shaders")]
     [SerializeField] private ComputeShader _kernelsShader;
+    [Tooltip("ISF со стенками сетки, χ и AddGravityToVelocity. Только RectangularContainer; для Jet/колец не используется. В Editor подставляется из папки, если пусто.")]
+    [SerializeField] private ComputeShader _containerIsfShader;
     [SerializeField] private ComputeShader _fftShader;
     [SerializeField] private ComputeShader _particlesShader;
     [Tooltip("Отдельный compute с ConstrainParticlesToLiquidChi. Для ёмкости+χ в Editor подставляется из папки, если поле пустое; для билда перетащите SFComputeParticlesChiConstrain.")]
     [SerializeField] private ComputeShader _particlesChiConstrainShader;
+    [Tooltip("Интерполяция u без wrap + кламп трассеров (SFComputeParticlesWall). Только RectangularContainer; в Editor подставляется из папки, если пусто.")]
+    [SerializeField] private ComputeShader _particlesWallShader;
     [SerializeField] private ComputeShader _lesShader;
 
     [Header("Пресеты (контекстное меню Apply Scenario Defaults)")]
@@ -166,6 +170,10 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
 #if UNITY_EDITOR
     private const string ParticlesChiConstrainAssetPath =
         "Assets/Scenes/JetExample/ComputeShader/SFComputeParticlesChiConstrain.compute";
+    private const string ContainerIsfAssetPath =
+        "Assets/Scenes/JetExample/ComputeShader/SFComputeKernelsContainer.compute";
+    private const string ParticlesWallAssetPath =
+        "Assets/Scenes/JetExample/ComputeShader/SFComputeParticlesWall.compute";
 #endif
 
     /// <summary>Подтяжка трассеров к χ: отдельный compute-asset, не смешиваем с основным шейдером частиц (Metal/CB).</summary>
@@ -180,6 +188,28 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         return null;
     }
 
+    private ComputeShader ResolveContainerIsfShader()
+    {
+        if (_containerIsfShader != null)
+            return _containerIsfShader;
+#if UNITY_EDITOR
+        if (_scenario == ScenarioType.RectangularContainer)
+            return AssetDatabase.LoadAssetAtPath<ComputeShader>(ContainerIsfAssetPath);
+#endif
+        return null;
+    }
+
+    private ComputeShader ResolveParticlesWallShader()
+    {
+        if (_particlesWallShader != null)
+            return _particlesWallShader;
+#if UNITY_EDITOR
+        if (_scenario == ScenarioType.RectangularContainer)
+            return AssetDatabase.LoadAssetAtPath<ComputeShader>(ParticlesWallAssetPath);
+#endif
+        return null;
+    }
+
     #region Lifecycle
 
     private void Start()
@@ -188,7 +218,10 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         _particleDisplay = GetComponent<ParticleDisplay3D>();
 
         _isf = new CSISF();
-        _isf.Init(_kernelsShader, _fftShader, _lesShader, vol_size, vol_res, hbar, dt);
+        ComputeShader containerIsf = _scenario == ScenarioType.RectangularContainer
+            ? ResolveContainerIsfShader()
+            : null;
+        _isf.Init(_kernelsShader, _fftShader, _lesShader, vol_size, vol_res, hbar, dt, containerIsf);
         _isf.clampGridBorders = _scenario == ScenarioType.RectangularContainer;
         _isf.useLiquidChiField = _scenario == ScenarioType.RectangularContainer && _useLiquidChiField;
         _isf.liquidChiThreshold = _liquidChiThreshold;
@@ -201,7 +234,8 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         int maxParticles = oneTimeParticles ? _nParticles : _nParticles * 1000;
 
         _particles = new CSParticles();
-        _particles.Init(_particlesShader, maxParticles, _isf, ResolveParticlesChiConstrainShader());
+        _particles.Init(_particlesShader, maxParticles, _isf, ResolveParticlesChiConstrainShader(),
+            ResolveParticlesWallShader());
 
         _vel = new CSVelocity(_isf.resX, _isf.resY, _isf.resZ);
 
@@ -233,6 +267,13 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
             SyncParticleDisplayScaleFromSimulation();
         else if (!Mathf.Approximately(_particleSize, _particleSizeSyncedForDisplay))
             _particleSizeSyncedForDisplay = _particleSize;
+
+#if UNITY_EDITOR
+        if (_scenario == ScenarioType.RectangularContainer && _containerIsfShader == null)
+            _containerIsfShader = AssetDatabase.LoadAssetAtPath<ComputeShader>(ContainerIsfAssetPath);
+        if (_scenario == ScenarioType.RectangularContainer && _particlesWallShader == null)
+            _particlesWallShader = AssetDatabase.LoadAssetAtPath<ComputeShader>(ParticlesWallAssetPath);
+#endif
 
         if (_initialized && _isf != null)
         {

@@ -33,17 +33,23 @@ namespace ComputeShaderSF
         private ComputeBuffer _divResult, _poissonTemp;
         private CSVelocity _velCurrent, _velFiltered, _velTemp;
 
-        private ComputeShader _kernels;
+        /// <summary>Базовый ISF (Jet, кольца, …): без χ/стенок, тот же bytecode что и до ветки ёмкости.</summary>
+        private ComputeShader _kCore;
+        /// <summary>Расширенный ISF (стенки сетки, χ, среднее u): только при <see cref="clampGridBorders"/>.</summary>
+        private ComputeShader _kExt;
         private CSFFT _fft;
         private CSLES _les;
 
-        private int _normalizeK, _gaugeK, _shiftK, _mulEachK;
-        private int _copyR2CK, _fftNormK, _velOneK;
-        private int _staggeredK, _divK, _jetK;
-        private int _gravK, _heatK, _addGravVelK;
-        private int _advectLiquidChiK, _gasVacuumPsiK;
-        private int _maskVelChiK;
-        private int _sumHorizVelK, _subHorizMeanK;
+        private struct IsfKernelTable
+        {
+            public int Normalize, Gauge, Shift, MulEach, CopyR2C, FFTNorm, VelOne, Staggered, Div, Jet, Grav, Heat;
+            public int AddGravVel, AdvectChi, GasVacuum, MaskVelChi, SumHoriz, SubHorizMean;
+        }
+
+        private IsfKernelTable _coreIds, _extIds;
+        private ComputeShader _activeSh;
+        private IsfKernelTable _activeIds;
+        private bool _warnedMissingContainerExt;
 
         private ComputeBuffer _liquidChi;
         private ComputeBuffer _liquidChiTemp;
@@ -51,8 +57,9 @@ namespace ComputeShaderSF
         private Vector2[] _partialVelXZCpu;
         private int _velHorizMeanGroupCount;
 
-        public void Init(ComputeShader kernels, ComputeShader fftShader,
-            ComputeShader lesShader, int[] volSize, int[] volRes, float hbar, float dt)
+        public void Init(ComputeShader coreKernels, ComputeShader fftShader,
+            ComputeShader lesShader, int[] volSize, int[] volRes, float hbar, float dt,
+            ComputeShader containerKernels = null)
         {
             sizeX = volSize[0]; sizeY = volSize[1]; sizeZ = volSize[2];
             int rx0 = volRes[0], ry0 = volRes[1], rz0 = volRes[2];
@@ -75,28 +82,13 @@ namespace ComputeShaderSF
             this.hbar = hbar;
             this.dt = dt;
 
-            _kernels = kernels;
-
-            _normalizeK = kernels.FindKernel("Normalize");
-            _gaugeK = kernels.FindKernel("Gauge");
-            _shiftK = kernels.FindKernel("Shift");
-            _mulEachK = kernels.FindKernel("MulEach");
-            _copyR2CK = kernels.FindKernel("CopyRealToComplex");
-            _fftNormK = kernels.FindKernel("FFTNorm");
-            _velOneK = kernels.FindKernel("VelocityOne");
-            _staggeredK = kernels.FindKernel("StaggeredSharp");
-            _divK = kernels.FindKernel("Div");
-            _jetK = kernels.FindKernel("ApplyJetBoundary");
-            _gravK = kernels.FindKernel("GravityPsi2");
-            _heatK = kernels.FindKernel("HeatSinkPsi1");
-            _addGravVelK = kernels.HasKernel("AddGravityToVelocity")
-                ? kernels.FindKernel("AddGravityToVelocity")
-                : -1;
-            _advectLiquidChiK = kernels.FindKernel("AdvectLiquidChi");
-            _gasVacuumPsiK = kernels.FindKernel("ApplyGasVacuumPsi");
-            _maskVelChiK = kernels.FindKernel("MaskVelocityByLiquidChi");
-            _sumHorizVelK = kernels.FindKernel("SumHorizontalVelocityPartial");
-            _subHorizMeanK = kernels.FindKernel("SubtractHorizontalVelocityMean");
+            _kCore = coreKernels;
+            _kExt = containerKernels;
+            BindKernelTable(_kCore, ref _coreIds, extended: false);
+            if (_kExt != null)
+                BindKernelTable(_kExt, ref _extIds, extended: true);
+            else
+                ClearExtKernelSlots(ref _extIds);
 
             psi1 = new ComputeBuffer(num, sizeof(float) * 2);
             psi2 = new ComputeBuffer(num, sizeof(float) * 2);
@@ -128,6 +120,82 @@ namespace ComputeShaderSF
             BuildPositionGrids();
             BuildMask();
             BuildFac();
+        }
+
+        private static void BindKernelTable(ComputeShader s, ref IsfKernelTable t, bool extended)
+        {
+            t.Normalize = s.FindKernel("Normalize");
+            t.Gauge = s.FindKernel("Gauge");
+            t.Shift = s.FindKernel("Shift");
+            t.MulEach = s.FindKernel("MulEach");
+            t.CopyR2C = s.FindKernel("CopyRealToComplex");
+            t.FFTNorm = s.FindKernel("FFTNorm");
+            t.VelOne = s.FindKernel("VelocityOne");
+            t.Staggered = s.FindKernel("StaggeredSharp");
+            t.Div = s.FindKernel("Div");
+            t.Jet = s.FindKernel("ApplyJetBoundary");
+            t.Grav = s.FindKernel("GravityPsi2");
+            t.Heat = s.FindKernel("HeatSinkPsi1");
+            if (extended)
+            {
+                t.AddGravVel = s.FindKernel("AddGravityToVelocity");
+                t.AdvectChi = s.FindKernel("AdvectLiquidChi");
+                t.GasVacuum = s.FindKernel("ApplyGasVacuumPsi");
+                t.MaskVelChi = s.FindKernel("MaskVelocityByLiquidChi");
+                t.SumHoriz = s.FindKernel("SumHorizontalVelocityPartial");
+                t.SubHorizMean = s.FindKernel("SubtractHorizontalVelocityMean");
+            }
+            else
+                ClearExtKernelSlots(ref t);
+        }
+
+        private static void ClearExtKernelSlots(ref IsfKernelTable t)
+        {
+            t.AddGravVel = -1;
+            t.AdvectChi = -1;
+            t.GasVacuum = -1;
+            t.MaskVelChi = -1;
+            t.SumHoriz = -1;
+            t.SubHorizMean = -1;
+        }
+
+        private void PickActive()
+        {
+            if (clampGridBorders && _kExt == null && !_warnedMissingContainerExt)
+            {
+                Debug.LogWarning(
+                    "[CSISF] clampGridBorders включён, но не задан SFComputeKernelsContainer — используется базовый ISF с периодическими границами (ψ/u и трассеры будут вести себя неверно в ёмкости).");
+                _warnedMissingContainerExt = true;
+            }
+            bool useExt = clampGridBorders && _kExt != null;
+            _activeSh = useExt ? _kExt : _kCore;
+            _activeIds = useExt ? _extIds : _coreIds;
+        }
+
+        private void SetUniformsBase(ComputeShader s)
+        {
+            s.SetInt("_ResX", resX);
+            s.SetInt("_ResY", resY);
+            s.SetInt("_ResZ", resZ);
+            s.SetInt("_Num", num);
+            s.SetFloat("_DX", dx);
+            s.SetFloat("_DY", dy);
+            s.SetFloat("_DZ", dz);
+            s.SetFloat("_Hbar", hbar);
+        }
+
+        private void SetExtLayoutUniforms(ComputeShader s)
+        {
+            s.SetInt("_ClampGridBorders", clampGridBorders ? 1 : 0);
+            s.SetInt("_LiquidChiNormalizeFallback", useLiquidChiField ? 1 : 0);
+        }
+
+        private void BindExtKernelUniforms()
+        {
+            if (_kExt == null)
+                return;
+            SetUniformsBase(_kExt);
+            SetExtLayoutUniforms(_kExt);
         }
 
         private static bool IsPowerOfTwo(int n) => n > 0 && (n & (n - 1)) == 0;
@@ -203,24 +271,18 @@ namespace ComputeShaderSF
 
         private void SetCommonUniforms()
         {
-            _kernels.SetInt("_ResX", resX);
-            _kernels.SetInt("_ResY", resY);
-            _kernels.SetInt("_ResZ", resZ);
-            _kernels.SetInt("_Num", num);
-            _kernels.SetFloat("_DX", dx);
-            _kernels.SetFloat("_DY", dy);
-            _kernels.SetFloat("_DZ", dz);
-            _kernels.SetFloat("_Hbar", hbar);
-            _kernels.SetInt("_ClampGridBorders", clampGridBorders ? 1 : 0);
-            _kernels.SetInt("_LiquidChiNormalizeFallback", useLiquidChiField ? 1 : 0);
+            PickActive();
+            SetUniformsBase(_activeSh);
+            if (ReferenceEquals(_activeSh, _kExt) && _kExt != null)
+                SetExtLayoutUniforms(_activeSh);
         }
 
         public void Normalize()
         {
             SetCommonUniforms();
-            _kernels.SetBuffer(_normalizeK, "_Psi1", psi1);
-            _kernels.SetBuffer(_normalizeK, "_Psi2", psi2);
-            _kernels.Dispatch(_normalizeK, Groups1D, 1, 1);
+            _activeSh.SetBuffer(_activeIds.Normalize, "_Psi1", psi1);
+            _activeSh.SetBuffer(_activeIds.Normalize, "_Psi2", psi2);
+            _activeSh.Dispatch(_activeIds.Normalize, Groups1D, 1, 1);
         }
 
         /// <summary>Текущее поле χ (после последней адвекции); null, если <see cref="useLiquidChiField"/> выключен — для визуализации.</summary>
@@ -242,22 +304,22 @@ namespace ComputeShaderSF
         /// </summary>
         public void AdvectLiquidChi(CSVelocity vel)
         {
-            if (!useLiquidChiField)
+            if (!useLiquidChiField || _kExt == null || _extIds.AdvectChi < 0)
                 return;
-            SetCommonUniforms();
-            _kernels.SetFloat("_DT", dt);
-            _kernels.SetFloat("_BoundX", sizeX);
-            _kernels.SetFloat("_BoundY", sizeY);
-            _kernels.SetFloat("_BoundZ", sizeZ);
-            _kernels.SetBuffer(_advectLiquidChiK, "_ChiIn", _liquidChi);
-            _kernels.SetBuffer(_advectLiquidChiK, "_ChiOut", _liquidChiTemp);
-            _kernels.SetBuffer(_advectLiquidChiK, "_VX", vel.vx);
-            _kernels.SetBuffer(_advectLiquidChiK, "_VY", vel.vy);
-            _kernels.SetBuffer(_advectLiquidChiK, "_VZ", vel.vz);
-            _kernels.SetBuffer(_advectLiquidChiK, "_PX", _px);
-            _kernels.SetBuffer(_advectLiquidChiK, "_PY", _py);
-            _kernels.SetBuffer(_advectLiquidChiK, "_PZ", _pz);
-            _kernels.Dispatch(_advectLiquidChiK, Groups1D, 1, 1);
+            BindExtKernelUniforms();
+            _kExt.SetFloat("_DT", dt);
+            _kExt.SetFloat("_BoundX", sizeX);
+            _kExt.SetFloat("_BoundY", sizeY);
+            _kExt.SetFloat("_BoundZ", sizeZ);
+            _kExt.SetBuffer(_extIds.AdvectChi, "_ChiIn", _liquidChi);
+            _kExt.SetBuffer(_extIds.AdvectChi, "_ChiOut", _liquidChiTemp);
+            _kExt.SetBuffer(_extIds.AdvectChi, "_VX", vel.vx);
+            _kExt.SetBuffer(_extIds.AdvectChi, "_VY", vel.vy);
+            _kExt.SetBuffer(_extIds.AdvectChi, "_VZ", vel.vz);
+            _kExt.SetBuffer(_extIds.AdvectChi, "_PX", _px);
+            _kExt.SetBuffer(_extIds.AdvectChi, "_PY", _py);
+            _kExt.SetBuffer(_extIds.AdvectChi, "_PZ", _pz);
+            _kExt.Dispatch(_extIds.AdvectChi, Groups1D, 1, 1);
             var swap = _liquidChi;
             _liquidChi = _liquidChiTemp;
             _liquidChiTemp = swap;
@@ -265,19 +327,19 @@ namespace ComputeShaderSF
 
         private void ApplyGasVacuumFromChi()
         {
-            if (!useLiquidChiField)
+            if (!useLiquidChiField || _kExt == null || _extIds.GasVacuum < 0)
                 return;
-            SetCommonUniforms();
-            _kernels.SetFloat("_ChiLiqThreshold", liquidChiThreshold);
+            BindExtKernelUniforms();
+            _kExt.SetFloat("_ChiLiqThreshold", liquidChiThreshold);
             const float e1 = 1e-6f, e2 = 1e-7f;
-            _kernels.SetFloat("_Vac1R", e1);
-            _kernels.SetFloat("_Vac1I", 0f);
-            _kernels.SetFloat("_Vac2R", e2);
-            _kernels.SetFloat("_Vac2I", 0f);
-            _kernels.SetBuffer(_gasVacuumPsiK, "_ChiField", _liquidChi);
-            _kernels.SetBuffer(_gasVacuumPsiK, "_Psi1", psi1);
-            _kernels.SetBuffer(_gasVacuumPsiK, "_Psi2", psi2);
-            _kernels.Dispatch(_gasVacuumPsiK, Groups1D, 1, 1);
+            _kExt.SetFloat("_Vac1R", e1);
+            _kExt.SetFloat("_Vac1I", 0f);
+            _kExt.SetFloat("_Vac2R", e2);
+            _kExt.SetFloat("_Vac2I", 0f);
+            _kExt.SetBuffer(_extIds.GasVacuum, "_ChiField", _liquidChi);
+            _kExt.SetBuffer(_extIds.GasVacuum, "_Psi1", psi1);
+            _kExt.SetBuffer(_extIds.GasVacuum, "_Psi2", psi2);
+            _kExt.Dispatch(_extIds.GasVacuum, Groups1D, 1, 1);
         }
 
         /// <summary>
@@ -286,15 +348,15 @@ namespace ComputeShaderSF
         /// </summary>
         private void MaskVelocityByLiquidChi(CSVelocity v)
         {
-            if (!useLiquidChiField)
+            if (!useLiquidChiField || _kExt == null || _extIds.MaskVelChi < 0)
                 return;
-            SetCommonUniforms();
-            _kernels.SetFloat("_ChiLiqThreshold", liquidChiThreshold);
-            _kernels.SetBuffer(_maskVelChiK, "_ChiField", _liquidChi);
-            _kernels.SetBuffer(_maskVelChiK, "_VX", v.vx);
-            _kernels.SetBuffer(_maskVelChiK, "_VY", v.vy);
-            _kernels.SetBuffer(_maskVelChiK, "_VZ", v.vz);
-            _kernels.Dispatch(_maskVelChiK, Groups1D, 1, 1);
+            BindExtKernelUniforms();
+            _kExt.SetFloat("_ChiLiqThreshold", liquidChiThreshold);
+            _kExt.SetBuffer(_extIds.MaskVelChi, "_ChiField", _liquidChi);
+            _kExt.SetBuffer(_extIds.MaskVelChi, "_VX", v.vx);
+            _kExt.SetBuffer(_extIds.MaskVelChi, "_VY", v.vy);
+            _kExt.SetBuffer(_extIds.MaskVelChi, "_VZ", v.vz);
+            _kExt.Dispatch(_extIds.MaskVelChi, Groups1D, 1, 1);
         }
 
         /// <summary>
@@ -303,13 +365,13 @@ namespace ComputeShaderSF
         /// </summary>
         private void RemoveMeanHorizontalVelocity(CSVelocity v)
         {
-            if (!clampGridBorders)
+            if (!clampGridBorders || _kExt == null || _extIds.SumHoriz < 0)
                 return;
-            SetCommonUniforms();
-            _kernels.SetBuffer(_sumHorizVelK, "_VX", v.vx);
-            _kernels.SetBuffer(_sumHorizVelK, "_VZ", v.vz);
-            _kernels.SetBuffer(_sumHorizVelK, "_PartialVelXZSum", _partialVelXZSum);
-            _kernels.Dispatch(_sumHorizVelK, _velHorizMeanGroupCount, 1, 1);
+            BindExtKernelUniforms();
+            _kExt.SetBuffer(_extIds.SumHoriz, "_VX", v.vx);
+            _kExt.SetBuffer(_extIds.SumHoriz, "_VZ", v.vz);
+            _kExt.SetBuffer(_extIds.SumHoriz, "_PartialVelXZSum", _partialVelXZSum);
+            _kExt.Dispatch(_extIds.SumHoriz, _velHorizMeanGroupCount, 1, 1);
 
             _partialVelXZSum.GetData(_partialVelXZCpu);
             double sx = 0.0, sz = 0.0;
@@ -320,11 +382,11 @@ namespace ComputeShaderSF
             }
             float mx = (float)(sx / num);
             float mz = (float)(sz / num);
-            _kernels.SetFloat("_MeanSubX", mx);
-            _kernels.SetFloat("_MeanSubZ", mz);
-            _kernels.SetBuffer(_subHorizMeanK, "_VX", v.vx);
-            _kernels.SetBuffer(_subHorizMeanK, "_VZ", v.vz);
-            _kernels.Dispatch(_subHorizMeanK, Groups1D, 1, 1);
+            _kExt.SetFloat("_MeanSubX", mx);
+            _kExt.SetFloat("_MeanSubZ", mz);
+            _kExt.SetBuffer(_extIds.SubHorizMean, "_VX", v.vx);
+            _kExt.SetBuffer(_extIds.SubHorizMean, "_VZ", v.vz);
+            _kExt.Dispatch(_extIds.SubHorizMean, Groups1D, 1, 1);
         }
 
         private void SchoedingerFlow()
@@ -352,21 +414,21 @@ namespace ComputeShaderSF
 
         private void ShiftBuffer(ComputeBuffer buf)
         {
-            _kernels.SetBuffer(_shiftK, "_BufComplex", buf);
-            _kernels.Dispatch(_shiftK, Groups1D, 1, 1);
+            _activeSh.SetBuffer(_activeIds.Shift, "_BufComplex", buf);
+            _activeSh.Dispatch(_activeIds.Shift, Groups1D, 1, 1);
         }
 
         private void MulEachBuffers(ComputeBuffer a, ComputeBuffer b)
         {
-            _kernels.SetBuffer(_mulEachK, "_BufComplex", a);
-            _kernels.SetBuffer(_mulEachK, "_BufComplex2", b);
-            _kernels.Dispatch(_mulEachK, Groups1D, 1, 1);
+            _activeSh.SetBuffer(_activeIds.MulEach, "_BufComplex", a);
+            _activeSh.SetBuffer(_activeIds.MulEach, "_BufComplex2", b);
+            _activeSh.Dispatch(_activeIds.MulEach, Groups1D, 1, 1);
         }
 
         private void FFTNormBuffer(ComputeBuffer buf)
         {
-            _kernels.SetBuffer(_fftNormK, "_BufComplex", buf);
-            _kernels.Dispatch(_fftNormK, Groups1D, 1, 1);
+            _activeSh.SetBuffer(_activeIds.FFTNorm, "_BufComplex", buf);
+            _activeSh.Dispatch(_activeIds.FFTNorm, Groups1D, 1, 1);
         }
 
         /// <summary>
@@ -381,49 +443,49 @@ namespace ComputeShaderSF
         private void VelocityOneForm(CSVelocity v, float h)
         {
             SetCommonUniforms();
-            _kernels.SetFloat("_Hbar", h);
-            _kernels.SetBuffer(_velOneK, "_Psi1", psi1);
-            _kernels.SetBuffer(_velOneK, "_Psi2", psi2);
-            _kernels.SetBuffer(_velOneK, "_VX", v.vx);
-            _kernels.SetBuffer(_velOneK, "_VY", v.vy);
-            _kernels.SetBuffer(_velOneK, "_VZ", v.vz);
-            _kernels.Dispatch(_velOneK, Groups1D, 1, 1);
+            _activeSh.SetFloat("_Hbar", h);
+            _activeSh.SetBuffer(_activeIds.VelOne, "_Psi1", psi1);
+            _activeSh.SetBuffer(_activeIds.VelOne, "_Psi2", psi2);
+            _activeSh.SetBuffer(_activeIds.VelOne, "_VX", v.vx);
+            _activeSh.SetBuffer(_activeIds.VelOne, "_VY", v.vy);
+            _activeSh.SetBuffer(_activeIds.VelOne, "_VZ", v.vz);
+            _activeSh.Dispatch(_activeIds.VelOne, Groups1D, 1, 1);
         }
 
         private void StaggeredSharp(CSVelocity vel)
         {
             SetCommonUniforms();
 
-            _kernels.SetBuffer(_staggeredK, "_BufFloat", vel.vx);
-            _kernels.SetFloat("_Param", dx);
-            _kernels.Dispatch(_staggeredK, Groups1D, 1, 1);
+            _activeSh.SetBuffer(_activeIds.Staggered, "_BufFloat", vel.vx);
+            _activeSh.SetFloat("_Param", dx);
+            _activeSh.Dispatch(_activeIds.Staggered, Groups1D, 1, 1);
 
-            _kernels.SetBuffer(_staggeredK, "_BufFloat", vel.vy);
-            _kernels.SetFloat("_Param", dy);
-            _kernels.Dispatch(_staggeredK, Groups1D, 1, 1);
+            _activeSh.SetBuffer(_activeIds.Staggered, "_BufFloat", vel.vy);
+            _activeSh.SetFloat("_Param", dy);
+            _activeSh.Dispatch(_activeIds.Staggered, Groups1D, 1, 1);
 
-            _kernels.SetBuffer(_staggeredK, "_BufFloat", vel.vz);
-            _kernels.SetFloat("_Param", dz);
-            _kernels.Dispatch(_staggeredK, Groups1D, 1, 1);
+            _activeSh.SetBuffer(_activeIds.Staggered, "_BufFloat", vel.vz);
+            _activeSh.SetFloat("_Param", dz);
+            _activeSh.Dispatch(_activeIds.Staggered, Groups1D, 1, 1);
         }
 
         private void Div(CSVelocity v, ComputeBuffer result)
         {
             SetCommonUniforms();
-            _kernels.SetBuffer(_divK, "_VX", v.vx);
-            _kernels.SetBuffer(_divK, "_VY", v.vy);
-            _kernels.SetBuffer(_divK, "_VZ", v.vz);
-            _kernels.SetBuffer(_divK, "_BufFloat", result);
-            _kernels.Dispatch(_divK, Groups1D, 1, 1);
+            _activeSh.SetBuffer(_activeIds.Div, "_VX", v.vx);
+            _activeSh.SetBuffer(_activeIds.Div, "_VY", v.vy);
+            _activeSh.SetBuffer(_activeIds.Div, "_VZ", v.vz);
+            _activeSh.SetBuffer(_activeIds.Div, "_BufFloat", result);
+            _activeSh.Dispatch(_activeIds.Div, Groups1D, 1, 1);
         }
 
         private void PoissonSolve(ComputeBuffer f, ComputeBuffer result)
         {
             SetCommonUniforms();
 
-            _kernels.SetBuffer(_copyR2CK, "_BufComplex", result);
-            _kernels.SetBuffer(_copyR2CK, "_BufFloat", f);
-            _kernels.Dispatch(_copyR2CK, Groups1D, 1, 1);
+            _activeSh.SetBuffer(_activeIds.CopyR2C, "_BufComplex", result);
+            _activeSh.SetBuffer(_activeIds.CopyR2C, "_BufFloat", f);
+            _activeSh.Dispatch(_activeIds.CopyR2C, Groups1D, 1, 1);
 
             _fft.FFT3D(result, false);
             MulEachBuffers(result, _fac);
@@ -436,10 +498,10 @@ namespace ComputeShaderSF
             PoissonSolve(_divResult, _poissonTemp);
 
             SetCommonUniforms();
-            _kernels.SetBuffer(_gaugeK, "_Psi1", psi1);
-            _kernels.SetBuffer(_gaugeK, "_Psi2", psi2);
-            _kernels.SetBuffer(_gaugeK, "_BufComplex", _poissonTemp);
-            _kernels.Dispatch(_gaugeK, Groups1D, 1, 1);
+            _activeSh.SetBuffer(_activeIds.Gauge, "_Psi1", psi1);
+            _activeSh.SetBuffer(_activeIds.Gauge, "_Psi2", psi2);
+            _activeSh.SetBuffer(_activeIds.Gauge, "_BufComplex", _poissonTemp);
+            _activeSh.Dispatch(_activeIds.Gauge, Groups1D, 1, 1);
         }
 
         public void PressureProject()
@@ -536,25 +598,26 @@ namespace ComputeShaderSF
         private void ApplyGravityPsi2(Vector3 g, bool rotatePsi1Too = false)
         {
             SetCommonUniforms();
-            _kernels.SetInt("_GravityBothPsi", rotatePsi1Too ? 1 : 0);
-            _kernels.SetFloat("_GX", g.x);
-            _kernels.SetFloat("_GY", g.y);
-            _kernels.SetFloat("_GZ", g.z);
-            _kernels.SetFloat("_DT", dt);
-            _kernels.SetBuffer(_gravK, "_Psi1", psi1);
-            _kernels.SetBuffer(_gravK, "_Psi2", psi2);
-            _kernels.SetBuffer(_gravK, "_PX", _px);
-            _kernels.SetBuffer(_gravK, "_PY", _py);
-            _kernels.SetBuffer(_gravK, "_PZ", _pz);
-            _kernels.Dispatch(_gravK, Groups1D, 1, 1);
+            if (ReferenceEquals(_activeSh, _kExt) && _kExt != null)
+                _activeSh.SetInt("_GravityBothPsi", rotatePsi1Too ? 1 : 0);
+            _activeSh.SetFloat("_GX", g.x);
+            _activeSh.SetFloat("_GY", g.y);
+            _activeSh.SetFloat("_GZ", g.z);
+            _activeSh.SetFloat("_DT", dt);
+            _activeSh.SetBuffer(_activeIds.Grav, "_Psi1", psi1);
+            _activeSh.SetBuffer(_activeIds.Grav, "_Psi2", psi2);
+            _activeSh.SetBuffer(_activeIds.Grav, "_PX", _px);
+            _activeSh.SetBuffer(_activeIds.Grav, "_PY", _py);
+            _activeSh.SetBuffer(_activeIds.Grav, "_PZ", _pz);
+            _activeSh.Dispatch(_activeIds.Grav, Groups1D, 1, 1);
         }
 
         private void ApplyHeatSinkPsi1(ComputeBuffer isJet)
         {
             SetCommonUniforms();
-            _kernels.SetBuffer(_heatK, "_Psi1", psi1);
-            _kernels.SetBuffer(_heatK, "_IsJet", isJet);
-            _kernels.Dispatch(_heatK, Groups1D, 1, 1);
+            _activeSh.SetBuffer(_activeIds.Heat, "_Psi1", psi1);
+            _activeSh.SetBuffer(_activeIds.Heat, "_IsJet", isJet);
+            _activeSh.Dispatch(_activeIds.Heat, Groups1D, 1, 1);
         }
 
         /// <summary>Пересчёт u из ψ (без маски по χ): для адвекции χ нужна полная скорость на границе жидкость/газ.</summary>
@@ -573,19 +636,19 @@ namespace ComputeShaderSF
         /// </summary>
         public void ApplyVelocityGravity(Vector3 g, CSVelocity vel)
         {
-            if (_addGravVelK < 0)
+            if (_kExt == null || _extIds.AddGravVel < 0)
             {
-                Debug.LogError("[CSISF] Шейдер ISF без kernel AddGravityToVelocity — обновите SFComputeKernels.compute / asset.");
+                Debug.LogError("[CSISF] AddGravityToVelocity только в SFComputeKernelsContainer — задай второй ISF compute для сценария ёмкости.");
                 return;
             }
-            SetCommonUniforms();
-            _kernels.SetFloat("_GX", g.x * dt);
-            _kernels.SetFloat("_GY", g.y * dt);
-            _kernels.SetFloat("_GZ", g.z * dt);
-            _kernels.SetBuffer(_addGravVelK, "_VX", vel.vx);
-            _kernels.SetBuffer(_addGravVelK, "_VY", vel.vy);
-            _kernels.SetBuffer(_addGravVelK, "_VZ", vel.vz);
-            _kernels.Dispatch(_addGravVelK, Groups1D, 1, 1);
+            BindExtKernelUniforms();
+            _kExt.SetFloat("_GX", g.x * dt);
+            _kExt.SetFloat("_GY", g.y * dt);
+            _kExt.SetFloat("_GZ", g.z * dt);
+            _kExt.SetBuffer(_extIds.AddGravVel, "_VX", vel.vx);
+            _kExt.SetBuffer(_extIds.AddGravVel, "_VY", vel.vy);
+            _kExt.SetBuffer(_extIds.AddGravVel, "_VZ", vel.vz);
+            _kExt.Dispatch(_extIds.AddGravVel, Groups1D, 1, 1);
             RemoveMeanHorizontalVelocity(vel);
             PressureProject(vel);
             ApplyGasVacuumFromChi();
@@ -603,18 +666,18 @@ namespace ComputeShaderSF
             float kvecX, float kvecY, float kvecZ, float phaseOffset)
         {
             SetCommonUniforms();
-            _kernels.SetFloat("_KVecX", kvecX);
-            _kernels.SetFloat("_KVecY", kvecY);
-            _kernels.SetFloat("_KVecZ", kvecZ);
-            _kernels.SetFloat("_PhaseOffset", phaseOffset);
+            _activeSh.SetFloat("_KVecX", kvecX);
+            _activeSh.SetFloat("_KVecY", kvecY);
+            _activeSh.SetFloat("_KVecZ", kvecZ);
+            _activeSh.SetFloat("_PhaseOffset", phaseOffset);
 
-            _kernels.SetBuffer(_jetK, "_Psi1", psi1);
-            _kernels.SetBuffer(_jetK, "_Psi2", psi2);
-            _kernels.SetBuffer(_jetK, "_IsJet", isJet);
-            _kernels.SetBuffer(_jetK, "_PX", _px);
-            _kernels.SetBuffer(_jetK, "_PY", _py);
-            _kernels.SetBuffer(_jetK, "_PZ", _pz);
-            _kernels.Dispatch(_jetK, Groups1D, 1, 1);
+            _activeSh.SetBuffer(_activeIds.Jet, "_Psi1", psi1);
+            _activeSh.SetBuffer(_activeIds.Jet, "_Psi2", psi2);
+            _activeSh.SetBuffer(_activeIds.Jet, "_IsJet", isJet);
+            _activeSh.SetBuffer(_activeIds.Jet, "_PX", _px);
+            _activeSh.SetBuffer(_activeIds.Jet, "_PY", _py);
+            _activeSh.SetBuffer(_activeIds.Jet, "_PZ", _pz);
+            _activeSh.Dispatch(_activeIds.Jet, Groups1D, 1, 1);
         }
 
         public void Dispose()

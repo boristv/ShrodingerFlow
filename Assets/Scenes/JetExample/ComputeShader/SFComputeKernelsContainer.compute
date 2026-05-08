@@ -1,0 +1,450 @@
+#pragma kernel Normalize
+#pragma kernel Gauge
+#pragma kernel Shift
+#pragma kernel MulEach
+#pragma kernel CopyRealToComplex
+#pragma kernel FFTNorm
+#pragma kernel VelocityOne
+#pragma kernel StaggeredSharp
+#pragma kernel Div
+#pragma kernel ApplyJetBoundary
+#pragma kernel GravityPsi2
+#pragma kernel HeatSinkPsi1
+#pragma kernel AdvectLiquidChi
+#pragma kernel ApplyGasVacuumPsi
+#pragma kernel AddGravityToVelocity
+#pragma kernel MaskVelocityByLiquidChi
+#pragma kernel SumHorizontalVelocityPartial
+#pragma kernel SubtractHorizontalVelocityMean
+
+RWStructuredBuffer<float2> _Psi1;
+RWStructuredBuffer<float2> _Psi2;
+RWStructuredBuffer<float2> _BufComplex;
+RWStructuredBuffer<float2> _BufComplex2;
+RWStructuredBuffer<float>  _BufFloat;
+RWStructuredBuffer<float>  _VX;
+RWStructuredBuffer<float>  _VY;
+RWStructuredBuffer<float>  _VZ;
+StructuredBuffer<int>      _IsJet;
+StructuredBuffer<float>    _PX;
+StructuredBuffer<float>    _PY;
+StructuredBuffer<float>    _PZ;
+
+int   _ResX;
+int   _ResY;
+int   _ResZ;
+int   _Num;
+float _DX;
+float _DY;
+float _DZ;
+float _Hbar;
+float _Param;
+float _KVecX;
+float _KVecY;
+float _KVecZ;
+float _PhaseOffset;
+float _GX;
+float _GY;
+float _GZ;
+float _DT;
+int  _ClampGridBorders;
+int  _GravityBothPsi;
+// 1 только при χ (ёмкость): сброс вырожденной |ψ|; Jet/кольца — 0 (как до fall water).
+int  _LiquidChiNormalizeFallback;
+
+StructuredBuffer<float>   _ChiIn;
+RWStructuredBuffer<float> _ChiOut;
+StructuredBuffer<float>   _ChiField;
+float _BoundX;
+float _BoundY;
+float _BoundZ;
+float _ChiLiqThreshold;
+float _Vac1R;
+float _Vac1I;
+float _Vac2R;
+float _Vac2I;
+
+RWStructuredBuffer<float2> _PartialVelXZSum;
+float _MeanSubX;
+float _MeanSubZ;
+
+float2 cmul(float2 a, float2 b)
+{
+    return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+[numthreads(256, 1, 1)]
+void Normalize(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    float sqAbs1 = _Psi1[i].x * _Psi1[i].x + _Psi1[i].y * _Psi1[i].y;
+    float sqAbs2 = _Psi2[i].x * _Psi2[i].x + _Psi2[i].y * _Psi2[i].y;
+    float norm = sqrt(sqAbs1 + sqAbs2);
+    if (_LiquidChiNormalizeFallback != 0 && norm < 1e-20)
+    {
+        _Psi1[i] = float2(1.0, 0.0);
+        _Psi2[i] = float2(0.01, 0.0);
+        return;
+    }
+
+    _Psi1[i] /= norm;
+    _Psi2[i] /= norm;
+}
+
+[numthreads(256, 1, 1)]
+void Gauge(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    float2 q = _BufComplex[i];
+    float2 eiq = float2(cos(-q.x / (float)_Num), sin(-q.x / (float)_Num));
+
+    _Psi1[i] = cmul(_Psi1[i], eiq);
+    _Psi2[i] = cmul(_Psi2[i], eiq);
+}
+
+[numthreads(256, 1, 1)]
+void Shift(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    int resyz = _ResY * _ResZ;
+    int ix = (i / _ResZ) / _ResY;
+    int iy = (i / _ResZ) % _ResY;
+    int iz = i % _ResZ;
+
+    int idx = _ResX / 2;
+    int idy = _ResY / 2;
+    int idz = _ResZ / 2;
+
+    if (ix >= idx) return;
+
+    int offset;
+    if (iy < idy)
+    {
+        if (iz < idz)
+            offset = idz + idy * _ResZ + idx * resyz;
+        else
+            offset = -idz + idy * _ResZ + idx * resyz;
+    }
+    else
+    {
+        if (iz < idz)
+            offset = idz - idy * _ResZ + idx * resyz;
+        else
+            offset = -idz - idy * _ResZ + idx * resyz;
+    }
+
+    float2 tmp = _BufComplex[i];
+    _BufComplex[i] = _BufComplex[i + offset];
+    _BufComplex[i + offset] = tmp;
+}
+
+[numthreads(256, 1, 1)]
+void MulEach(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    _BufComplex[i] = cmul(_BufComplex[i], _BufComplex2[i]);
+}
+
+[numthreads(256, 1, 1)]
+void CopyRealToComplex(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    _BufComplex[i] = float2(_BufFloat[i], 0);
+}
+
+[numthreads(256, 1, 1)]
+void FFTNorm(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    _BufComplex[i] /= (float)_Num;
+}
+
+[numthreads(256, 1, 1)]
+void VelocityOne(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    int iz = i % _ResZ;
+    int iy = (i / _ResZ) % _ResY;
+    int ix = i / (_ResY * _ResZ);
+    int r2 = _ResZ;
+    int r21 = _ResY * _ResZ;
+
+    int zNext, yNext, xNext;
+    if (_ClampGridBorders) {
+        if (iz < _ResZ - 1)
+            zNext = i + 1;
+        else if (iz > 0)
+            zNext = i - 1;
+        else
+            zNext = i;
+
+        if (iy < _ResY - 1)
+            yNext = i + r2;
+        else if (iy > 0)
+            yNext = i - r2;
+        else
+            yNext = i;
+
+        if (ix < _ResX - 1)
+            xNext = i + r21;
+        else if (ix > 0)
+            xNext = i - r21;
+        else
+            xNext = i;
+    } else {
+        zNext = (i / _ResZ) * _ResZ + (i + 1) % _ResZ;
+        yNext = i - ((i / _ResZ) % _ResY) * _ResZ
+              + ((((i + _ResZ) / _ResZ) % _ResY) * _ResZ);
+        xNext = (i + _ResZ * _ResY) % _Num;
+    }
+
+    float2 c1 = float2(_Psi1[i].x, -_Psi1[i].y);
+    float2 c2 = float2(_Psi2[i].x, -_Psi2[i].y);
+
+    float2 mul1 = _Psi1[zNext];
+    float2 mul2 = _Psi2[zNext];
+    float2 s = float2(c1.x * mul1.x - c1.y * mul1.y + c2.x * mul2.x - c2.y * mul2.y,
+                      c1.x * mul1.y + c1.y * mul1.x + c2.x * mul2.y + c2.y * mul2.x);
+    float r = atan2(s.y, s.x);
+    if (abs(s.y) < 0.00001) r = 0.0;
+    _VZ[i] = r * _Hbar;
+
+    mul1 = _Psi1[yNext];
+    mul2 = _Psi2[yNext];
+    s = float2(c1.x * mul1.x - c1.y * mul1.y + c2.x * mul2.x - c2.y * mul2.y,
+               c1.x * mul1.y + c1.y * mul1.x + c2.x * mul2.y + c2.y * mul2.x);
+    r = atan2(s.y, s.x);
+    if (abs(s.y) < 0.00001) r = 0.0;
+    _VY[i] = r * _Hbar;
+
+    mul1 = _Psi1[xNext];
+    mul2 = _Psi2[xNext];
+    s = float2(c1.x * mul1.x - c1.y * mul1.y + c2.x * mul2.x - c2.y * mul2.y,
+               c1.x * mul1.y + c1.y * mul1.x + c2.x * mul2.y + c2.y * mul2.x);
+    r = atan2(s.y, s.x);
+    if (abs(s.y) < 0.00001) r = 0.0;
+    _VX[i] = r * _Hbar;
+}
+
+[numthreads(256, 1, 1)]
+void MaskVelocityByLiquidChi(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    // Один вес на все компоненты: разные cx,cy,cz давали анизотропное поле после интерполяции
+    // к частицам → джиттер и «скачки» у границы жидкости.
+    float thr = _ChiLiqThreshold;
+    float w = smoothstep(thr, thr + 0.09, _ChiField[i]);
+    _VX[i] *= w;
+    _VY[i] *= w;
+    _VZ[i] *= w;
+}
+
+groupshared float shVX[256];
+groupshared float shVZ[256];
+
+[numthreads(256, 1, 1)]
+void SumHorizontalVelocityPartial(uint3 groupId : SV_GroupID, uint tid : SV_GroupIndex)
+{
+    uint g = groupId.x;
+    uint idx = g * 256u + tid;
+    float vx = (idx < (uint)_Num) ? _VX[idx] : 0.0;
+    float vz = (idx < (uint)_Num) ? _VZ[idx] : 0.0;
+    shVX[tid] = vx;
+    shVZ[tid] = vz;
+    GroupMemoryBarrierWithGroupSync();
+    for (uint s = 128u; s > 0u; s >>= 1u)
+    {
+        if (tid < s)
+        {
+            shVX[tid] += shVX[tid + s];
+            shVZ[tid] += shVZ[tid + s];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if (tid == 0u)
+        _PartialVelXZSum[g] = float2(shVX[0], shVZ[0]);
+}
+
+[numthreads(256, 1, 1)]
+void SubtractHorizontalVelocityMean(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+    _VX[i] -= _MeanSubX;
+    _VZ[i] -= _MeanSubZ;
+}
+
+[numthreads(256, 1, 1)]
+void StaggeredSharp(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    _BufFloat[i] /= _Param;
+}
+
+[numthreads(256, 1, 1)]
+void Div(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    int iz = i % _ResZ;
+    int iy = (i / _ResZ) % _ResY;
+    int ix = i / (_ResY * _ResZ);
+    int r2 = _ResZ;
+    int r21 = _ResY * _ResZ;
+
+    int xPrev, yPrev, zPrev;
+    if (_ClampGridBorders) {
+        xPrev = (ix > 0) ? (i - r21) : i;
+        yPrev = (iy > 0) ? (i - r2) : i;
+        zPrev = (iz > 0) ? (i - 1) : i;
+    } else {
+        int size = _Num;
+        xPrev = ((i - r21) % size + size) % size;
+        yPrev = i - ((i / _ResZ) % _ResY) * _ResZ
+              + ((((i - _ResZ + size) % size) / _ResZ) % _ResY) * _ResZ;
+        zPrev = (i / _ResZ) * _ResZ + ((i - 1 + size) % size) % _ResZ;
+    }
+
+    float d = (_VX[i] - _VX[xPrev]) / (_DX * _DX);
+    d += (_VY[i] - _VY[yPrev]) / (_DY * _DY);
+    d += (_VZ[i] - _VZ[zPrev]) / (_DZ * _DZ);
+
+    _BufFloat[i] = d;
+}
+
+[numthreads(256, 1, 1)]
+void ApplyJetBoundary(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+    if (_IsJet[i] == 0) return;
+
+    float phase = _KVecX * _PX[i] + _KVecY * _PY[i] + _KVecZ * _PZ[i] + _PhaseOffset;
+
+    float amp1 = length(_Psi1[i]);
+    float amp2 = length(_Psi2[i]);
+
+    float2 expPhase = float2(cos(phase), sin(phase));
+    _Psi1[i] = amp1 * expPhase;
+    _Psi2[i] = amp2 * expPhase;
+}
+
+[numthreads(256, 1, 1)]
+void GravityPsi2(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    float phase = (_GX * _PX[i] + _GY * _PY[i] + _GZ * _PZ[i]) * _DT / _Hbar;
+    float2 rot = float2(cos(phase), sin(phase));
+    _Psi2[i] = cmul(_Psi2[i], rot);
+    if (_GravityBothPsi)
+        _Psi1[i] = cmul(_Psi1[i], rot);
+}
+
+// Прямое добавление ускорения к полю скорости (без накопления фазы в ψ).
+// _GX/_GY/_GZ здесь уже умножены на dt снаружи.
+[numthreads(256, 1, 1)]
+void AddGravityToVelocity(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+    _VX[i] += _GX;
+    _VY[i] += _GY;
+    _VZ[i] += _GZ;
+}
+
+[numthreads(256, 1, 1)]
+void HeatSinkPsi1(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+    if (_IsJet[i] == 0) return;
+    _Psi1[i] = float2(0, 0);
+}
+
+[numthreads(256, 1, 1)]
+void AdvectLiquidChi(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    float3 d = float3(_VX[i], _VY[i], _VZ[i]) * _DT;
+    float h = min(_DX, min(_DY, _DZ));
+    float mag = length(d);
+    float lim = 0.35 * h;
+    if (mag > lim)
+        d *= lim / max(mag, 1e-20);
+
+    float bx = clamp(_PX[i] - d.x, 0.0, _BoundX - 1e-6);
+    float by = clamp(_PY[i] - d.y, 0.0, _BoundY - 1e-6);
+    float bz = clamp(_PZ[i] - d.z, 0.0, _BoundZ - 1e-6);
+
+    float fx = bx / _DX;
+    float fy = by / _DY;
+    float fz = bz / _DZ;
+    fx = clamp(fx, 0.0, (float)_ResX - 1.00001);
+    fy = clamp(fy, 0.0, (float)_ResY - 1.00001);
+    fz = clamp(fz, 0.0, (float)_ResZ - 1.00001);
+
+    int ix = (int)floor(fx);
+    int iy = (int)floor(fy);
+    int iz = (int)floor(fz);
+    float wx = fx - (float)ix;
+    float wy = fy - (float)iy;
+    float wz = fz - (float)iz;
+    int ixp = min(ix + 1, _ResX - 1);
+    int iyp = min(iy + 1, _ResY - 1);
+    int izp = min(iz + 1, _ResZ - 1);
+
+    int r2 = _ResZ;
+    int r21 = _ResY * _ResZ;
+
+    int i000 = ix * r21 + iy * r2 + iz;
+    int i100 = ixp * r21 + iy * r2 + iz;
+    int i010 = ix * r21 + iyp * r2 + iz;
+    int i110 = ixp * r21 + iyp * r2 + iz;
+    int i001 = ix * r21 + iy * r2 + izp;
+    int i101 = ixp * r21 + iy * r2 + izp;
+    int i011 = ix * r21 + iyp * r2 + izp;
+    int i111 = ixp * r21 + iyp * r2 + izp;
+
+    float c00 = lerp(_ChiIn[i000], _ChiIn[i100], wx);
+    float c10 = lerp(_ChiIn[i010], _ChiIn[i110], wx);
+    float c01 = lerp(_ChiIn[i001], _ChiIn[i101], wx);
+    float c11 = lerp(_ChiIn[i011], _ChiIn[i111], wx);
+    float c0 = lerp(c00, c10, wy);
+    float c1 = lerp(c01, c11, wy);
+    float c = lerp(c0, c1, wz);
+    _ChiOut[i] = saturate(c);
+}
+
+[numthreads(256, 1, 1)]
+void ApplyGasVacuumPsi(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+    if (_ChiField[i] >= _ChiLiqThreshold)
+        return;
+    _Psi1[i] = float2(_Vac1R, _Vac1I);
+    _Psi2[i] = float2(_Vac2R, _Vac2I);
+}

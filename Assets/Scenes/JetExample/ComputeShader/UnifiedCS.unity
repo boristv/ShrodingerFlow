@@ -154,8 +154,11 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   _kernelsShader: {fileID: 7200000, guid: c3e7cd12f2fab4c07aae370b20f458f6, type: 3}
+  _containerIsfShader: {fileID: 7200000, guid: f8c4e9aa8b2d4f1a9c7e5b3d2a1f0e9c, type: 3}
   _fftShader: {fileID: 7200000, guid: 1c06a635ac3034f0982bf39e14cfd35e, type: 3}
   _particlesShader: {fileID: 7200000, guid: 2894e3a1b59434c4f8a90079f8036355, type: 3}
+  _particlesChiConstrainShader: {fileID: 7200000, guid: b8c7f2e94d214d6b9a1a3c5e7f904abc, type: 3}
+  _particlesWallShader: {fileID: 7200000, guid: a1b2c3d45e6f708192a3b4c5d6e7f809a, type: 3}
   _lesShader: {fileID: 7200000, guid: de57605fec55e4a0096a1b3240cc595b, type: 3}
   _scenarioPresetsOverride: {fileID: 0}
   _scenario: 8

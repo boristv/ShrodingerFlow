@@ -6,9 +6,13 @@ namespace ComputeShaderSF
     public class CSParticles : IDisposable
     {
         private ComputeShader _shader;
+        private ComputeShader _wallShader;
         private ComputeShader _chiConstrainShader;
-        private int _addKernel, _interpKernel, _rk4Kernel, _wrapKernel, _clampKernel;
+        private int _addKernel, _interpKernel, _rk4Kernel, _wrapKernel;
+        private int _wallInterpKernel, _wallClampKernel;
         private int _constrainLiquidChiKernel;
+
+        private static bool s_warnedWallMissing;
 
         private ComputeBuffer _x, _y, _z;
         private ComputeBuffer _k1x, _k1y, _k1z;
@@ -27,10 +31,13 @@ namespace ComputeShaderSF
         private float _torDX, _torDY, _torDZ;
 
         /// <param name="chiConstrainShader">Опционально: отдельный compute только с <c>ConstrainParticlesToLiquidChi</c> (не смешивать с основным шейдером частиц).</param>
+        /// <param name="wallParticleShader">Опционально: <c>SFComputeParticlesWall</c> — интерполяция u без wrap по сетке и кламп у границ объёма (ёмкость).</param>
         public void Init(ComputeShader shader, int maxParticles, CSISF isf,
-            ComputeShader chiConstrainShader = null)
+            ComputeShader chiConstrainShader = null,
+            ComputeShader wallParticleShader = null)
         {
             _shader = shader;
+            _wallShader = wallParticleShader;
             _chiConstrainShader = chiConstrainShader;
             _maxCnt = maxParticles;
             _size = 0;
@@ -39,7 +46,14 @@ namespace ComputeShaderSF
             _interpKernel = shader.FindKernel("InterpolateVelocity");
             _rk4Kernel = shader.FindKernel("RK4Update");
             _wrapKernel = shader.FindKernel("WrapPositions");
-            _clampKernel = shader.FindKernel("ClampPositionsToVolume");
+
+            _wallInterpKernel = -1;
+            _wallClampKernel = -1;
+            if (_wallShader != null)
+            {
+                _wallInterpKernel = _wallShader.FindKernel("InterpolateVelocity");
+                _wallClampKernel = _wallShader.FindKernel("ClampPositionsToVolume");
+            }
 
             _constrainLiquidChiKernel = -1;
             if (_chiConstrainShader != null
@@ -128,15 +142,25 @@ namespace ComputeShaderSF
         {
             if (_size == 0) return;
 
-            SetTorusUniforms();
-            _shader.SetInt("_VelInterpClampGrid", clampVelocityGrid ? 1 : 0);
+            bool useWallInterp = clampVelocityGrid && _wallShader != null && _wallInterpKernel >= 0;
+            if (clampVelocityGrid && !useWallInterp && !s_warnedWallMissing)
+            {
+                Debug.LogWarning(
+                    "[CSParticles] clampVelocityGrid без SFComputeParticlesWall — остаётся периодическая интерполяция u (артефакты у стёнок ёмкости). Задайте wall-шейдер в SFUnifiedCS / соберите сцену с ассетом.");
+                s_warnedWallMissing = true;
+            }
+
+            SetTorusUniforms(_shader);
+            SetTorusUniforms(_wallShader);
             _shader.SetInt("_ParticleCount", _size);
+            if (_wallShader != null)
+                _wallShader.SetInt("_ParticleCount", _size);
             int groups = (_size + 255) / 256;
 
-            RunRK4Step(vel, _k1x, _k1y, _k1z, _k1x, _k1y, _k1z, 0f, groups);
-            RunRK4Step(vel, _k1x, _k1y, _k1z, _k2x, _k2y, _k2z, _dt * 0.5f, groups);
-            RunRK4Step(vel, _k2x, _k2y, _k2z, _k3x, _k3y, _k3z, _dt * 0.5f, groups);
-            RunRK4Step(vel, _k3x, _k3y, _k3z, _k4x, _k4y, _k4z, _dt, groups);
+            RunRK4Step(vel, _k1x, _k1y, _k1z, _k1x, _k1y, _k1z, 0f, groups, useWallInterp);
+            RunRK4Step(vel, _k1x, _k1y, _k1z, _k2x, _k2y, _k2z, _dt * 0.5f, groups, useWallInterp);
+            RunRK4Step(vel, _k2x, _k2y, _k2z, _k3x, _k3y, _k3z, _dt * 0.5f, groups, useWallInterp);
+            RunRK4Step(vel, _k3x, _k3y, _k3z, _k4x, _k4y, _k4z, _dt, groups, useWallInterp);
 
             _shader.SetFloat("_DT", _dt);
             _shader.SetBuffer(_rk4Kernel, "_PosX", _x);
@@ -160,33 +184,37 @@ namespace ComputeShaderSF
         private void RunRK4Step(CSVelocity vel,
             ComputeBuffer shiftX, ComputeBuffer shiftY, ComputeBuffer shiftZ,
             ComputeBuffer outX, ComputeBuffer outY, ComputeBuffer outZ,
-            float shiftFactor, int groups)
+            float shiftFactor, int groups, bool useWallInterp)
         {
-            _shader.SetFloat("_ShiftFactor", shiftFactor);
+            ComputeShader interpSh = useWallInterp && _wallShader != null ? _wallShader : _shader;
+            int interpK = useWallInterp && _wallShader != null ? _wallInterpKernel : _interpKernel;
 
-            _shader.SetBuffer(_interpKernel, "_PosX", _x);
-            _shader.SetBuffer(_interpKernel, "_PosY", _y);
-            _shader.SetBuffer(_interpKernel, "_PosZ", _z);
-            _shader.SetBuffer(_interpKernel, "_ShiftX", shiftX);
-            _shader.SetBuffer(_interpKernel, "_ShiftY", shiftY);
-            _shader.SetBuffer(_interpKernel, "_ShiftZ", shiftZ);
-            _shader.SetBuffer(_interpKernel, "_VelFieldX", vel.vx);
-            _shader.SetBuffer(_interpKernel, "_VelFieldY", vel.vy);
-            _shader.SetBuffer(_interpKernel, "_VelFieldZ", vel.vz);
-            _shader.SetBuffer(_interpKernel, "_OutX", outX);
-            _shader.SetBuffer(_interpKernel, "_OutY", outY);
-            _shader.SetBuffer(_interpKernel, "_OutZ", outZ);
-            _shader.Dispatch(_interpKernel, groups, 1, 1);
+            interpSh.SetFloat("_ShiftFactor", shiftFactor);
+
+            interpSh.SetBuffer(interpK, "_PosX", _x);
+            interpSh.SetBuffer(interpK, "_PosY", _y);
+            interpSh.SetBuffer(interpK, "_PosZ", _z);
+            interpSh.SetBuffer(interpK, "_ShiftX", shiftX);
+            interpSh.SetBuffer(interpK, "_ShiftY", shiftY);
+            interpSh.SetBuffer(interpK, "_ShiftZ", shiftZ);
+            interpSh.SetBuffer(interpK, "_VelFieldX", vel.vx);
+            interpSh.SetBuffer(interpK, "_VelFieldY", vel.vy);
+            interpSh.SetBuffer(interpK, "_VelFieldZ", vel.vz);
+            interpSh.SetBuffer(interpK, "_OutX", outX);
+            interpSh.SetBuffer(interpK, "_OutY", outY);
+            interpSh.SetBuffer(interpK, "_OutZ", outZ);
+            interpSh.Dispatch(interpK, groups, 1, 1);
         }
 
-        private void SetTorusUniforms()
+        private void SetTorusUniforms(ComputeShader s)
         {
-            _shader.SetInt("_TorResX", _torResX);
-            _shader.SetInt("_TorResY", _torResY);
-            _shader.SetInt("_TorResZ", _torResZ);
-            _shader.SetFloat("_TorDX", _torDX);
-            _shader.SetFloat("_TorDY", _torDY);
-            _shader.SetFloat("_TorDZ", _torDZ);
+            if (s == null) return;
+            s.SetInt("_TorResX", _torResX);
+            s.SetInt("_TorResY", _torResY);
+            s.SetInt("_TorResZ", _torResZ);
+            s.SetFloat("_TorDX", _torDX);
+            s.SetFloat("_TorDY", _torDY);
+            s.SetFloat("_TorDZ", _torDZ);
         }
 
         public void WrapPositions(float volSizeX, float volSizeY, float volSizeZ)
@@ -206,7 +234,7 @@ namespace ComputeShaderSF
         public void ClampPositionsToVolume(float volSizeX, float volSizeY, float volSizeZ,
             float jitterSigmaInCells = 0f, int jitterSeed = 0)
         {
-            if (_size == 0) return;
+            if (_size == 0 || _wallShader == null || _wallClampKernel < 0) return;
             float mcell = Mathf.Min(_torDX, Mathf.Min(_torDY, _torDZ));
             float margin = Mathf.Max(1e-5f, 0.35f * mcell);
             float halfMin = 0.5f * Mathf.Min(volSizeX, Mathf.Min(volSizeY, volSizeZ));
@@ -214,18 +242,18 @@ namespace ComputeShaderSF
                 margin = Mathf.Max(1e-5f, 0.2f * halfMin);
             float jitter = jitterSigmaInCells > 0f ? jitterSigmaInCells * mcell : 0f;
 
-            _shader.SetFloat("_ClampMargin", margin);
-            _shader.SetFloat("_JitterSigma", jitter);
-            _shader.SetInt("_JitterSeed", jitterSeed);
+            _wallShader.SetFloat("_ClampMargin", margin);
+            _wallShader.SetFloat("_JitterSigma", jitter);
+            _wallShader.SetInt("_JitterSeed", jitterSeed);
 
-            _shader.SetInt("_ParticleCount", _size);
-            _shader.SetFloat("_VolSizeX", volSizeX);
-            _shader.SetFloat("_VolSizeY", volSizeY);
-            _shader.SetFloat("_VolSizeZ", volSizeZ);
-            _shader.SetBuffer(_clampKernel, "_PosX", _x);
-            _shader.SetBuffer(_clampKernel, "_PosY", _y);
-            _shader.SetBuffer(_clampKernel, "_PosZ", _z);
-            _shader.Dispatch(_clampKernel, (_size + 255) / 256, 1, 1);
+            _wallShader.SetInt("_ParticleCount", _size);
+            _wallShader.SetFloat("_VolSizeX", volSizeX);
+            _wallShader.SetFloat("_VolSizeY", volSizeY);
+            _wallShader.SetFloat("_VolSizeZ", volSizeZ);
+            _wallShader.SetBuffer(_wallClampKernel, "_PosX", _x);
+            _wallShader.SetBuffer(_wallClampKernel, "_PosY", _y);
+            _wallShader.SetBuffer(_wallClampKernel, "_PosZ", _z);
+            _wallShader.Dispatch(_wallClampKernel, (_size + 255) / 256, 1, 1);
         }
 
         /// <summary>

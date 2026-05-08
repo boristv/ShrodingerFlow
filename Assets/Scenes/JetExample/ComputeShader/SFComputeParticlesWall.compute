@@ -1,0 +1,129 @@
+#pragma kernel InterpolateVelocity
+#pragma kernel ClampPositionsToVolume
+
+RWStructuredBuffer<float> _PosX;
+RWStructuredBuffer<float> _PosY;
+RWStructuredBuffer<float> _PosZ;
+
+StructuredBuffer<float>   _VelFieldX;
+StructuredBuffer<float>   _VelFieldY;
+StructuredBuffer<float>   _VelFieldZ;
+
+StructuredBuffer<float>   _ShiftX;
+StructuredBuffer<float>   _ShiftY;
+StructuredBuffer<float>   _ShiftZ;
+
+RWStructuredBuffer<float> _OutX;
+RWStructuredBuffer<float> _OutY;
+RWStructuredBuffer<float> _OutZ;
+
+int   _ParticleCount;
+float _ShiftFactor;
+
+int   _TorResX;
+int   _TorResY;
+int   _TorResZ;
+float _TorDX;
+float _TorDY;
+float _TorDZ;
+
+float _VolSizeX;
+float _VolSizeY;
+float _VolSizeZ;
+float _ClampMargin;
+float _JitterSigma;
+int   _JitterSeed;
+
+[numthreads(256, 1, 1)]
+void InterpolateVelocity(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+
+    float sh_x = 0.0;
+    float sh_y = 0.0;
+    float sh_z = 0.0;
+    if (abs(_ShiftFactor) > 1e-8)
+    {
+        sh_x = _ShiftX[i] * _ShiftFactor;
+        sh_y = _ShiftY[i] * _ShiftFactor;
+        sh_z = _ShiftZ[i] * _ShiftFactor;
+    }
+
+    float cell_x = (_PosX[i] + sh_x) / _TorDX;
+    cell_x = clamp(cell_x, 0.0, (float)_TorResX - 1e-5);
+    int ix = (int)floor(cell_x);
+    float wx = cell_x - (float)ix;
+    int ixp = min(ix + 1, _TorResX - 1);
+
+    float cell_y = (_PosY[i] + sh_y) / _TorDY;
+    cell_y = clamp(cell_y, 0.0, (float)_TorResY - 1e-5);
+    int iy = (int)floor(cell_y);
+    float wy = cell_y - (float)iy;
+    int iyp = min(iy + 1, _TorResY - 1);
+
+    float cell_z = (_PosZ[i] + sh_z) / _TorDZ;
+    cell_z = clamp(cell_z, 0.0, (float)_TorResZ - 1e-5);
+    int iz = (int)floor(cell_z);
+    float wz = cell_z - (float)iz;
+    int izp = min(iz + 1, _TorResZ - 1);
+
+    int r2 = _TorResZ;
+    int r21 = _TorResZ * _TorResY;
+
+    _OutX[i] = (1.0 - wz) * ((1.0 - wy) * _VelFieldX[ix * r21 + iy * r2 + iz]
+                                     + wy * _VelFieldX[ix * r21 + iyp * r2 + iz])
+                    + wz  * ((1.0 - wy) * _VelFieldX[ix * r21 + iy * r2 + izp]
+                                     + wy * _VelFieldX[ix * r21 + iyp * r2 + izp]);
+
+    _OutY[i] = (1.0 - wz) * ((1.0 - wx) * _VelFieldY[ix * r21 + iy * r2 + iz]
+                                     + wx * _VelFieldY[ixp * r21 + iy * r2 + iz])
+                    + wz  * ((1.0 - wx) * _VelFieldY[ix * r21 + iy * r2 + izp]
+                                     + wx * _VelFieldY[ixp * r21 + iy * r2 + izp]);
+
+    _OutZ[i] = (1.0 - wy) * ((1.0 - wx) * _VelFieldZ[ix * r21 + iy * r2 + iz]
+                                     + wx * _VelFieldZ[ixp * r21 + iy * r2 + iz])
+                    + wy  * ((1.0 - wx) * _VelFieldZ[ix * r21 + iyp * r2 + iz]
+                                     + wx * _VelFieldZ[ixp * r21 + iyp * r2 + iz]);
+}
+
+[numthreads(256, 1, 1)]
+void ClampPositionsToVolume(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+
+    float mx = _ClampMargin;
+    float my = _ClampMargin;
+    float mz = _ClampMargin;
+
+    float oldX = _PosX[i];
+    float oldY = _PosY[i];
+    float oldZ = _PosZ[i];
+    float clampedX = clamp(oldX, mx, _VolSizeX - mx);
+    float clampedY = clamp(oldY, my, _VolSizeY - my);
+    float clampedZ = clamp(oldZ, mz, _VolSizeZ - mz);
+    bool wasClamped = abs(clampedX - oldX) > 1e-6
+                   || abs(clampedY - oldY) > 1e-6
+                   || abs(clampedZ - oldZ) > 1e-6;
+
+    _PosX[i] = clampedX;
+    _PosY[i] = clampedY;
+    _PosZ[i] = clampedZ;
+
+    if (wasClamped && _JitterSigma > 0.0)
+    {
+        uint s = (uint)_JitterSeed + (uint)i * 1664525u + 1013904223u;
+        float rx = frac(sin(float(s)) * 43758.5453);
+        s = s * 1103515245u + 12345u;
+        float ry = frac(sin(float(s)) * 43758.5453);
+        s = s * 1103515245u + 12345u;
+        float rz = frac(sin(float(s)) * 43758.5453);
+        _PosX[i] += _JitterSigma * (rx * 2.0 - 1.0);
+        _PosY[i] += _JitterSigma * (ry * 2.0 - 1.0);
+        _PosZ[i] += _JitterSigma * (rz * 2.0 - 1.0);
+        _PosX[i] = clamp(_PosX[i], mx, _VolSizeX - mx);
+        _PosY[i] = clamp(_PosY[i], my, _VolSizeY - my);
+        _PosZ[i] = clamp(_PosZ[i], mz, _VolSizeZ - mz);
+    }
+}
