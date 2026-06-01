@@ -160,7 +160,7 @@ MonoBehaviour:
   _scenarioPresetsOverride: {fileID: 0}
   _scenario: 8
   vol_size: 050000000100000003000000
-  vol_res: 800000002000000060000000
+  vol_res: 800000002000000040000000
   hbar: 0.05
   dt: 0.041666668
   _velocity: {x: 1, y: 0, z: 0}
@@ -195,10 +195,10 @@ MonoBehaviour:
   _mazeVentCenter: {x: 4.75, y: 0.5, z: 2.35}
   _mazeVentHalf: {x: 0.12, y: 0.45, z: 0.35}
   _mazeVentSuction: {x: 0, y: 0, z: 0}
-  _mazeParticleDispersion: 0.18
-  _mazeDispersionWallBoost: 1.2
-  _mazeVentDrift: 0.12
-  _mazeWallDeflect: 0.55
+  _mazeParticleDispersion: 0.24
+  _mazeDispersionWallBoost: 2
+  _mazeVentDrift: 0.16
+  _mazeWallDeflect: 0
   _mazePushSearchCells: 36
   _cigaretteBackgroundU: {x: 0.1, y: 0, z: 0}
   _cigaretteJet: {x: 0, y: 1, z: 0}

@@ -111,6 +111,16 @@ int SolidAt(int ix, int iy, int iz)
     return _SolidMask[ix * r21 + iy * r2 + iz];
 }
 
+float MazeHash01(uint n)
+{
+    n = (n ^ 61u) ^ (n >> 16);
+    n *= 9u;
+    n = n ^ (n >> 4);
+    n *= 0x27d4eb2du;
+    n = n ^ (n >> 15);
+    return (float)(n & 0x00ffffffu) / (float)0x01000000u;
+}
+
 [numthreads(256, 1, 1)]
 void AddParticles(uint3 id : SV_DispatchThreadID)
 {
@@ -203,7 +213,7 @@ void PushParticlesOutOfSolidMask(uint3 id : SV_DispatchThreadID)
     if (SolidAt(ix, iy, iz) == 0) return;
 
     float bestScore = -1e20;
-    float3 bestPos = float3(px, py, pz);
+    float3 bestDelta = float3(0.0, 0.0, 0.0);
     float3 ventHint = float3(_VentTarget.x - px, 0.0, _VentTarget.z - pz);
     float ventLen = length(ventHint);
     float3 ventDir = ventLen > 1e-5 ? ventHint / ventLen : float3(1.0, 0.0, 0.0);
@@ -228,24 +238,30 @@ void PushParticlesOutOfSolidMask(uint3 id : SV_DispatchThreadID)
             if (score > bestScore)
             {
                 bestScore = score;
-                bestPos = cand;
+                bestDelta = delta;
             }
         }
         if (bestScore > -1e19) break;
     }
-    _PosX[i] = bestPos.x;
-    _PosY[i] = bestPos.y;
-    _PosZ[i] = bestPos.z;
-}
 
-float MazeHash01(uint n)
-{
-    n = (n ^ 61u) ^ (n >> 16);
-    n *= 9u;
-    n = n ^ (n >> 4);
-    n *= 0x27d4eb2du;
-    n = n ^ (n >> 15);
-    return (float)(n & 0x00ffffffu) / (float)0x01000000u;
+    float dBest = length(bestDelta);
+    if (dBest > 1e-6)
+    {
+        float3 dir = bestDelta / dBest;
+        float maxStep = max(_TorDX, max(_TorDY, _TorDZ)) * 1.35;
+        float step = min(dBest + 0.2 * max(_TorDX, _TorDZ), maxStep);
+        float3 p = float3(px, py, pz) + dir * step;
+
+        // Не кладём все частицы в центр одной свободной ячейки: это и было видно как синяя/красная линия у стен.
+        float tangentJitter = (MazeHash01((uint)i * 1597334677u + 3812015801u) - 0.5)
+            * min(_TorDX, _TorDZ) * 0.35;
+        float3 tangent = normalize(float3(-dir.z, 0.0, dir.x) + 1e-5);
+        p += tangent * tangentJitter;
+
+        _PosX[i] = p.x;
+        _PosY[i] = p.y;
+        _PosZ[i] = p.z;
+    }
 }
 
 // Турбулентная дисперсия в XZ + усиление у стен; curl-компонента для «закручивания».
@@ -297,8 +313,8 @@ void DriftMazeSourceParticles(uint3 id : SV_DispatchThreadID)
     _PosZ[i] = pz + _SourceDriftV.z * _SourceDriftDT;
 }
 
-// Мягкий продольный поток по лабиринту. Вытяжка не магнитит всю сцену напрямую:
-// у стен добавляется тангенциальная curl-компонента, а к vent по Z тянем только в правой части.
+// Мягкий продольный поток по лабиринту, wall-aware: не тащит через стены,
+// а заранее уводит струю к ближайшему свободному проходу и добавляет coherent curl у границы.
 [numthreads(256, 1, 1)]
 void DriftMazeTowardVent(uint3 id : SV_DispatchThreadID)
 {
@@ -310,23 +326,87 @@ void DriftMazeTowardVent(uint3 id : SV_DispatchThreadID)
     int iy = clamp((int)floor(py / _TorDY), 0, _TorResY - 1);
     int iz = clamp((int)floor(pz / _TorDZ), 0, _TorResZ - 1);
 
-    float left = (float)SolidAt(ix - 1, iy, iz);
-    float right = (float)SolidAt(ix + 1, iy, iz);
-    float down = (float)SolidAt(ix, iy, iz - 1);
-    float up = (float)SolidAt(ix, iy, iz + 1);
-    float2 wallGrad = float2(left - right, down - up);
-    float wallProx = saturate(abs(wallGrad.x) + abs(wallGrad.y));
-
     float2 drift = float2(1.0, 0.0);
+
+    // Градиент маски: нормаль от ближайшей стены. Нужен для boundary layer и анти-залипания.
+    float solidL = (float)SolidAt(ix - 1, iy, iz);
+    float solidR = (float)SolidAt(ix + 1, iy, iz);
+    float solidD = (float)SolidAt(ix, iy, iz - 1);
+    float solidU = (float)SolidAt(ix, iy, iz + 1);
+    float2 away = float2(solidL - solidR, solidD - solidU);
+    float wallProx = saturate(abs(away.x) + abs(away.y));
     if (wallProx > 1e-4)
     {
-        float2 tangent = normalize(float2(-wallGrad.y, wallGrad.x) + 1e-5);
-        float spinSign = MazeHash01((uint)i * 747796405u + 2891336453u) < 0.5 ? -1.0 : 1.0;
-        drift += tangent * spinSign * 0.85 * wallProx;
+        float2 n = normalize(away + 1e-5);
+        float2 tangent = float2(-n.y, n.x);
+
+        // У вертикальных граней верх/низ дают разные знаки, так формируются устойчивые ролики у кромок.
+        float edgeSign = (abs(away.y) > abs(away.x)) ? sign(away.y) : sign(pz - _VentDriftTarget.z);
+        drift += n * (0.55 * wallProx);
+        drift += tangent * (0.75 * wallProx * edgeSign);
+    }
+
+    // Обход включается только рядом с препятствием. Если начинать слишком рано,
+    // поток искусственно расщепляется и оставляет пустой клин перед стеной.
+    float bestScore = -1e20;
+    int bestDz = 0;
+    int firstBlockedLook = 0;
+    int lookMax = min(12, _TorResX - 1 - ix);
+    for (int look = 1; look <= lookMax; look++)
+    {
+        if (SolidAt(ix + look, iy, iz) != 0)
+        {
+            firstBlockedLook = look;
+            break;
+        }
+    }
+
+    float avoid = firstBlockedLook > 0
+        ? saturate((7.0 - (float)firstBlockedLook) / 6.0)
+        : 0.0;
+
+    if (avoid > 0.0)
+    {
+        int laneLookMax = min(lookMax, max(firstBlockedLook + 2, 3));
+        int scan = min(_PushSearchCells, _TorResZ / 2);
+        for (int dz = -scan; dz <= scan; dz++)
+        {
+            int jz = iz + dz;
+            if (jz < 1 || jz >= _TorResZ - 1) continue;
+            bool laneFree = true;
+            for (int look = 1; look <= laneLookMax; look++)
+                laneFree = laneFree && (SolidAt(ix + look, iy, jz) == 0);
+            if (!laneFree) continue;
+
+            float side = abs((float)dz);
+            float towardVentZ = -abs((((float)jz + 0.5) * _TorDZ) - _VentDriftTarget.z) * 0.15;
+            float score = -side * 1.35 + towardVentZ;
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestDz = dz;
+            }
+        }
+    }
+
+    if (bestDz != 0)
+    {
+        float side = sign((float)bestDz);
+        float laneStrength = saturate(1.0 - abs((float)bestDz) / max(1.0, (float)_PushSearchCells));
+        drift.x *= lerp(1.0, 0.68, avoid);
+        drift.y += side * avoid * (0.75 + 0.55 * laneStrength);
+
+        // Рециркуляция перед препятствием: частицы не собираются в плоскую пробку, а образуют заворот.
+        float2 vortexCenter = float2(((float)(ix + max(firstBlockedLook, 1)) + 0.5) * _TorDX,
+            ((float)(iz + bestDz) + 0.5) * _TorDZ);
+        float2 rel = float2(px, pz) - vortexCenter;
+        float r2 = dot(rel, rel) + 0.02;
+        float2 swirl = float2(-rel.y, rel.x) / r2;
+        drift += swirl * (0.018 * side * avoid);
     }
 
     float ventGate = smoothstep(_VentDriftTarget.x - 1.2, _VentDriftTarget.x - 0.25, px);
-    float zPull = clamp(_VentDriftTarget.z - pz, -0.8, 0.8) * 0.35 * ventGate;
+    float zPull = clamp(_VentDriftTarget.z - pz, -0.8, 0.8) * 0.12 * ventGate;
     drift += float2(0.0, zPull);
     drift = normalize(drift + 1e-5);
 

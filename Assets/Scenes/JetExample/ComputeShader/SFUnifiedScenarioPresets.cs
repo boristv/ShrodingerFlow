@@ -147,7 +147,7 @@ public class SFUnifiedScenarioPresets : ScriptableObject
         smokeMaze2D = new SFUnifiedSmokeMaze2DPreset
         {
             vol_size = new[] { 5, 1, 3 },
-            vol_res = new[] { 128, 32, 96 },
+            vol_res = new[] { 128, 32, 64 },
             hbar = 0.05f,
             dt = 1f / 24f,
             wallThickness = 0.12f,
@@ -164,10 +164,10 @@ public class SFUnifiedScenarioPresets : ScriptableObject
             ventCenter = new Vector3(4.75f, 0.5f, 2.35f),
             ventHalf = new Vector3(0.12f, 0.45f, 0.35f),
             ventSuction = Vector3.zero,
-            particleDispersion = 0.18f,
-            dispersionWallBoost = 1.2f,
-            ventDrift = 0.12f,
-            wallDeflect = 0.55f,
+            particleDispersion = 0.24f,
+            dispersionWallBoost = 2.0f,
+            ventDrift = 0.16f,
+            wallDeflect = 0f,
             pushSearchCells = 36,
             kinematicViscosity = 0.0004f,
             nParticles = 60,
