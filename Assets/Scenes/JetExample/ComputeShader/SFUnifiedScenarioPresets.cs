@@ -31,6 +31,9 @@ public class SFUnifiedScenarioPresets : ScriptableObject
     [Header("RectangularContainer — прямоугольная ёмкость, блок жидкости, penalization стенок")]
     public SFUnifiedRectangularContainerPreset rectangularContainer;
 
+    [Header("RoomSmoke — дым в помещении: 2 комнаты с проёмом, источник, вытяжка")]
+    public SFUnifiedRoomSmokePreset roomSmoke;
+
     /// <summary>Встроенные значения (копия референсных сцен на момент добавления).</summary>
     public static SFUnifiedScenarioPresets CreateBuiltIn()
     {
@@ -164,6 +167,41 @@ public class SFUnifiedScenarioPresets : ScriptableObject
             useLiquidChiField = true,
             liquidChiThreshold = 0.5f
         };
+
+        // Помещение 4×3×4: две комнаты, перегородка по X=2 с дверью; источник у пола слева, вытяжка у потолка справа.
+        roomSmoke = new SFUnifiedRoomSmokePreset
+        {
+            vol_size = new[] { 4, 3, 4 },
+            vol_res = new[] { 64, 64, 64 },
+            hbar = 0.05f,
+            dt = 1f / 24f,
+            wallThickness = 0.12f,
+            partitionX = 2f,
+            partitionThickness = 0.12f,
+            doorCenterZ = 2f,
+            doorWidth = 1f,
+            doorHeight = 1.5f,
+            sourceCenter = new Vector3(0.9f, 0.5f, 2f),
+            sourceHalf = new Vector3(0.3f, 0.3f, 0.3f),
+            emitVelocity = new Vector3(0f, 0.6f, 0f),
+            chiInject = 1f,
+            ventCenter = new Vector3(3.1f, 2.5f, 2f),
+            ventHalf = new Vector3(0.4f, 0.22f, 0.5f),
+            ventSuction = new Vector3(0f, 1.2f, 0f),
+            ventDecay = 0.8f,
+            buoyancyBeta = 10f,
+            buoyancyDir = new Vector3(0f, 1f, 0f),
+            smokeRiseSpeed = 0.4f,
+            smokeDiffusion = 0.06f,
+            tracerDispersion = 0.15f,
+            turbAmplitude = 0.6f,
+            turbScale = 1.6f,
+            kinematicViscosity = 0.0002f,
+            nParticles = 2000,
+            particleSize = 0.05f,
+            stepsPerFrame = 2,
+            useLES = true
+        };
     }
 
     public void ApplyTo(SFUnifiedCS target)
@@ -201,6 +239,9 @@ public class SFUnifiedScenarioPresets : ScriptableObject
                 break;
             case SFUnifiedCS.ScenarioType.RectangularContainer:
                 target.ApplyRectangularContainerPreset(rectangularContainer);
+                break;
+            case SFUnifiedCS.ScenarioType.RoomSmoke:
+                target.ApplyRoomSmokePreset(roomSmoke);
                 break;
         }
     }

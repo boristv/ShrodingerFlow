@@ -1,9 +1,23 @@
 #pragma kernel InterpolateVelocity
 #pragma kernel ClampPositionsToVolume
+#pragma kernel PushParticlesOutOfSolid
+#pragma kernel KillParticlesInVent
 
 RWStructuredBuffer<float> _PosX;
 RWStructuredBuffer<float> _PosY;
 RWStructuredBuffer<float> _PosZ;
+
+// Маска твёрдого тела (стены/перегородка): 1 = солид. Для выталкивания трассеров.
+StructuredBuffer<int> _SolidMask;
+// Зона вытяжки в координатах объёма [0..VolSize]: частицы внутри помечаются мёртвыми.
+float _VentMinX;
+float _VentMinY;
+float _VentMinZ;
+float _VentMaxX;
+float _VentMaxY;
+float _VentMaxZ;
+// Сколько ячеек просматривать при поиске ближайшей свободной при выталкивании.
+int _PushSearchCells;
 
 StructuredBuffer<float>   _VelFieldX;
 StructuredBuffer<float>   _VelFieldY;
@@ -125,5 +139,77 @@ void ClampPositionsToVolume(uint3 id : SV_DispatchThreadID)
         _PosX[i] = clamp(_PosX[i], mx, _VolSizeX - mx);
         _PosY[i] = clamp(_PosY[i], my, _VolSizeY - my);
         _PosZ[i] = clamp(_PosZ[i], mz, _VolSizeZ - mz);
+    }
+}
+
+int SolidAt(int ix, int iy, int iz)
+{
+    ix = clamp(ix, 0, _TorResX - 1);
+    iy = clamp(iy, 0, _TorResY - 1);
+    iz = clamp(iz, 0, _TorResZ - 1);
+    return _SolidMask[ix * _TorResZ * _TorResY + iy * _TorResZ + iz];
+}
+
+// Выталкивание трассера из твёрдой ячейки: ищем ближайшую свободную вдоль ±X,±Y,±Z
+// и сдвигаем только эту координату к центру свободной ячейки (частица «скользит» вдоль стены).
+[numthreads(256, 1, 1)]
+void PushParticlesOutOfSolid(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+
+    int ix = (int)floor(_PosX[i] / _TorDX);
+    int iy = (int)floor(_PosY[i] / _TorDY);
+    int iz = (int)floor(_PosZ[i] / _TorDZ);
+    ix = clamp(ix, 0, _TorResX - 1);
+    iy = clamp(iy, 0, _TorResY - 1);
+    iz = clamp(iz, 0, _TorResZ - 1);
+
+    if (SolidAt(ix, iy, iz) == 0) return;
+
+    int bestStep = 1 << 30;
+    int bestAxis = -1;
+    int bestSign = 0;
+    int bestCell = 0;
+
+    int maxS = max(1, _PushSearchCells);
+    for (int step = 1; step <= maxS; step++)
+    {
+        if (step < bestStep && SolidAt(ix + step, iy, iz) == 0) { bestStep = step; bestAxis = 0; bestSign = +1; bestCell = ix + step; }
+        if (step < bestStep && SolidAt(ix - step, iy, iz) == 0) { bestStep = step; bestAxis = 0; bestSign = -1; bestCell = ix - step; }
+        if (step < bestStep && SolidAt(ix, iy + step, iz) == 0) { bestStep = step; bestAxis = 1; bestSign = +1; bestCell = iy + step; }
+        if (step < bestStep && SolidAt(ix, iy - step, iz) == 0) { bestStep = step; bestAxis = 1; bestSign = -1; bestCell = iy - step; }
+        if (step < bestStep && SolidAt(ix, iy, iz + step) == 0) { bestStep = step; bestAxis = 2; bestSign = +1; bestCell = iz + step; }
+        if (step < bestStep && SolidAt(ix, iy, iz - step) == 0) { bestStep = step; bestAxis = 2; bestSign = -1; bestCell = iz - step; }
+        if (bestAxis >= 0) break;
+    }
+
+    if (bestAxis == 0)
+        _PosX[i] = ((float)bestCell + 0.5) * _TorDX;
+    else if (bestAxis == 1)
+        _PosY[i] = ((float)bestCell + 0.5) * _TorDY;
+    else if (bestAxis == 2)
+        _PosZ[i] = ((float)bestCell + 0.5) * _TorDZ;
+}
+
+// Удаление трассеров в зоне вытяжки: выносим за границы домена (−1),
+// дальнейший CompactParticles на CPU их отсеивает.
+[numthreads(256, 1, 1)]
+void KillParticlesInVent(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+
+    float x = _PosX[i];
+    float y = _PosY[i];
+    float z = _PosZ[i];
+    bool inside = x >= _VentMinX && x <= _VentMaxX
+               && y >= _VentMinY && y <= _VentMaxY
+               && z >= _VentMinZ && z <= _VentMaxZ;
+    if (inside)
+    {
+        _PosX[i] = -1.0;
+        _PosY[i] = -1.0;
+        _PosZ[i] = -1.0;
     }
 }

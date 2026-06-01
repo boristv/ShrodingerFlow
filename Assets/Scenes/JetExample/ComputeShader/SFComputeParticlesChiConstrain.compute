@@ -1,6 +1,9 @@
 // Отдельный asset: подтяжка трассеров к χ. Основной SFComputeParticles.compute не трогать —
 // иначе ломается раскладка CBUF на части платформ (Jet, кольца и т.д.).
 #pragma kernel ConstrainParticlesToLiquidChi
+#pragma kernel AddBuoyantDriftToParticles
+#pragma kernel KillParticlesLowChi
+#pragma kernel DisperseParticlesInChi
 
 RWStructuredBuffer<float> _PosX;
 RWStructuredBuffer<float> _PosY;
@@ -21,6 +24,20 @@ float _ChiConstrainStrength;
 float _ChiConstrainSoftMargin;
 float3 _ChiGravityDir;
 float _ChiGravityScale;
+
+// Дрейф всплытия трассеров дыма (drift-flux): сдвиг вдоль _Drift, взвешенный по концентрации χ.
+float3 _Drift;
+float _DriftDT;
+float _DriftChiLo;
+float _DriftChiHi;
+
+// Порог удаления трассеров, ушедших из дыма (χ ниже порога — «дым рассеялся»).
+float _KillChiThreshold;
+
+// Турбулентная дисперсия трассеров: случайное блуждание внутри дыма (взвешено по χ).
+float _DisperseSigma;       // амплитуда шага в мировых единицах
+int   _DisperseSeed;        // меняется каждый шаг — декоррелирует блуждание
+float _DisperseChiThreshold;
 
 float SampleChiTrilinear(float3 worldPos)
 {
@@ -114,4 +131,80 @@ void ConstrainParticlesToLiquidChi(uint3 id : SV_DispatchThreadID)
     _PosX[i] = p.x;
     _PosY[i] = p.y;
     _PosZ[i] = p.z;
+}
+
+// Дрейф всплытия: трассеры внутри дыма (χ выше порога) поднимаются вместе с дымом сквозь спокойный
+// воздух (поле скорости там замаскировано нулём). Вес — smoothstep по χ, шаг ограничен CFL.
+[numthreads(256, 1, 1)]
+void AddBuoyantDriftToParticles(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+
+    float3 p = float3(_PosX[i], _PosY[i], _PosZ[i]);
+    float chiP = SampleChiTrilinear(p);
+    float w = smoothstep(_DriftChiLo, _DriftChiHi, chiP);
+    if (w < 1e-5) return;
+
+    float mcell = min(_TorDX, min(_TorDY, _TorDZ));
+    float3 d = _Drift * (_DriftDT * w);
+    float mag = length(d);
+    float lim = 0.32 * mcell;
+    if (mag > lim)
+        d *= lim / max(mag, 1e-20);
+
+    _PosX[i] = p.x + d.x;
+    _PosY[i] = p.y + d.y;
+    _PosZ[i] = p.z + d.z;
+}
+
+// Трассеры, ушедшие из дыма (χ ниже порога), выносим за границы (−1): далее их отсеивает CompactParticles.
+// Так нет статичного «замёрзшего» облака в неподвижном воздухе, а трассеры повторяют форму дыма.
+[numthreads(256, 1, 1)]
+void KillParticlesLowChi(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+    float chiP = SampleChiTrilinear(float3(_PosX[i], _PosY[i], _PosZ[i]));
+    if (chiP < _KillChiThreshold)
+    {
+        _PosX[i] = -1.0;
+        _PosY[i] = -1.0;
+        _PosZ[i] = -1.0;
+    }
+}
+
+float Hash01(uint n)
+{
+    n = (n ^ 61u) ^ (n >> 16);
+    n *= 9u;
+    n = n ^ (n >> 4);
+    n *= 0x27d4eb2du;
+    n = n ^ (n >> 15);
+    return (float)(n & 0x00ffffffu) / (float)0x01000000u;
+}
+
+// Турбулентная дисперсия: трассеры внутри дыма получают случайный шаг (взвешен по χ), что
+// расширяет султан вбок и даёт «клубящееся облако» вместо тонкого столба. Вне дыма — без изменений.
+[numthreads(256, 1, 1)]
+void DisperseParticlesInChi(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+
+    float3 p = float3(_PosX[i], _PosY[i], _PosZ[i]);
+    float chiP = SampleChiTrilinear(p);
+    if (chiP < _DisperseChiThreshold) return;
+
+    float w = saturate((chiP - _DisperseChiThreshold) / max(1.0 - _DisperseChiThreshold, 1e-5));
+
+    uint baseSeed = (uint)i * 2654435761u + (uint)_DisperseSeed * 40503u;
+    float rx = Hash01(baseSeed + 1u) * 2.0 - 1.0;
+    float ry = Hash01(baseSeed + 7u) * 2.0 - 1.0;
+    float rz = Hash01(baseSeed + 13u) * 2.0 - 1.0;
+
+    float s = _DisperseSigma * w;
+    _PosX[i] = p.x + rx * s;
+    _PosY[i] = p.y + ry * s;
+    _PosZ[i] = p.z + rz * s;
 }

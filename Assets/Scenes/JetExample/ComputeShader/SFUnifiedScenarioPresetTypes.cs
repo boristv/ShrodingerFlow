@@ -128,3 +128,39 @@ public struct SFUnifiedRectangularContainerPreset
     public bool useLiquidChiField;
     public float liquidChiThreshold;
 }
+
+/// <summary>Пресет «дым в помещении»: 2 комнаты с проёмом, источник дыма (χ + плавучесть), вытяжка (сток χ + подсос).</summary>
+[Serializable]
+public struct SFUnifiedRoomSmokePreset
+{
+    public int[] vol_size;
+    public int[] vol_res;
+    public float hbar;
+    public float dt;
+    public float wallThickness;
+    public float partitionX;
+    public float partitionThickness;
+    public float doorCenterZ;
+    public float doorWidth;
+    public float doorHeight;
+    public Vector3 sourceCenter;
+    public Vector3 sourceHalf;
+    public Vector3 emitVelocity;
+    public float chiInject;
+    public Vector3 ventCenter;
+    public Vector3 ventHalf;
+    public Vector3 ventSuction;
+    public float ventDecay;
+    public float buoyancyBeta;
+    public Vector3 buoyancyDir;
+    public float smokeRiseSpeed;
+    public float smokeDiffusion;
+    public float tracerDispersion;
+    public float turbAmplitude;
+    public float turbScale;
+    public float kinematicViscosity;
+    public int nParticles;
+    public float particleSize;
+    public int stepsPerFrame;
+    public bool useLES;
+}

@@ -25,6 +25,15 @@ namespace ComputeShaderSF
         /// <summary>Ячейки с χ ниже порога — газ; в них ψ принудительно подменяется на малый вакуум после нормировки и фазовых шагов.</summary>
         public float liquidChiThreshold = 0.5f;
 
+        /// <summary>
+        /// χ влияет на ψ (вакуум в «газе») — нужно для жидкость/газ (ёмкость). Для пассивного скаляра дыма выключить:
+        /// тогда χ адвектируется как маркер концентрации, но ψ и поле скорости не «обнуляются» вне дыма.
+        /// </summary>
+        public bool chiAffectsPsiVacuum = true;
+
+        /// <summary>Обнулять u в ячейках с низким χ. Для жидкость/газ — true; для дыма (среда заполняет весь объём) — false.</summary>
+        public bool maskVelocityWithChi = true;
+
         public float[] pxCPU, pyCPU, pzCPU;
         public ComputeBuffer psi1, psi2;
 
@@ -44,6 +53,7 @@ namespace ComputeShaderSF
         {
             public int Normalize, Gauge, Shift, MulEach, CopyR2C, FFTNorm, VelOne, Staggered, Div, Jet, Grav, Heat;
             public int AddGravVel, AdvectChi, GasVacuum, MaskVelChi, SumHoriz, SubHorizMean;
+            public int Buoyancy, InjectChi, ChiSink, DiffuseChi, CurlNoise;
         }
 
         private IsfKernelTable _coreIds, _extIds;
@@ -144,6 +154,11 @@ namespace ComputeShaderSF
                 t.MaskVelChi = s.FindKernel("MaskVelocityByLiquidChi");
                 t.SumHoriz = s.FindKernel("SumHorizontalVelocityPartial");
                 t.SubHorizMean = s.FindKernel("SubtractHorizontalVelocityMean");
+                t.Buoyancy = s.FindKernel("AddBuoyancyToVelocity");
+                t.InjectChi = s.FindKernel("InjectChiSource");
+                t.ChiSink = s.FindKernel("ChiSinkVent");
+                t.DiffuseChi = s.FindKernel("DiffuseChi");
+                t.CurlNoise = s.FindKernel("AddCurlNoiseTurbulence");
             }
             else
                 ClearExtKernelSlots(ref t);
@@ -157,6 +172,11 @@ namespace ComputeShaderSF
             t.MaskVelChi = -1;
             t.SumHoriz = -1;
             t.SubHorizMean = -1;
+            t.Buoyancy = -1;
+            t.InjectChi = -1;
+            t.ChiSink = -1;
+            t.DiffuseChi = -1;
+            t.CurlNoise = -1;
         }
 
         private void PickActive()
@@ -304,9 +324,18 @@ namespace ComputeShaderSF
         /// </summary>
         public void AdvectLiquidChi(CSVelocity vel)
         {
+            AdvectLiquidChi(vel, Vector3.zero);
+        }
+
+        /// <param name="drift">Скорость всплытия дыма относительно воздуха (drift-flux): добавляется к u при переносе χ.</param>
+        public void AdvectLiquidChi(CSVelocity vel, Vector3 drift)
+        {
             if (!useLiquidChiField || _kExt == null || _extIds.AdvectChi < 0)
                 return;
             BindExtKernelUniforms();
+            _kExt.SetFloat("_ChiDriftX", drift.x);
+            _kExt.SetFloat("_ChiDriftY", drift.y);
+            _kExt.SetFloat("_ChiDriftZ", drift.z);
             _kExt.SetFloat("_DT", dt);
             _kExt.SetFloat("_BoundX", sizeX);
             _kExt.SetFloat("_BoundY", sizeY);
@@ -327,7 +356,7 @@ namespace ComputeShaderSF
 
         private void ApplyGasVacuumFromChi()
         {
-            if (!useLiquidChiField || _kExt == null || _extIds.GasVacuum < 0)
+            if (!useLiquidChiField || !chiAffectsPsiVacuum || _kExt == null || _extIds.GasVacuum < 0)
                 return;
             BindExtKernelUniforms();
             _kExt.SetFloat("_ChiLiqThreshold", liquidChiThreshold);
@@ -348,7 +377,7 @@ namespace ComputeShaderSF
         /// </summary>
         private void MaskVelocityByLiquidChi(CSVelocity v)
         {
-            if (!useLiquidChiField || _kExt == null || _extIds.MaskVelChi < 0)
+            if (!useLiquidChiField || !maskVelocityWithChi || _kExt == null || _extIds.MaskVelChi < 0)
                 return;
             BindExtKernelUniforms();
             _kExt.SetFloat("_ChiLiqThreshold", liquidChiThreshold);
@@ -660,6 +689,91 @@ namespace ComputeShaderSF
             if (!useLiquidChiField)
                 return;
             MaskVelocityByLiquidChi(vel);
+        }
+
+        /// <summary>
+        /// Плавучесть (Буссинеск): u += β·χ·dir·dt по полю скорости, затем <see cref="PressureProject(CSVelocity)"/>.
+        /// Сила направлена вдоль <paramref name="dir"/> (обычно +Y) и пропорциональна концентрации дыма χ.
+        /// Требует <see cref="useLiquidChiField"/> (χ — носитель дыма) и расширенный compute (ёмкость/комната).
+        /// </summary>
+        public void ApplyBuoyancy(Vector3 dir, float beta, CSVelocity vel)
+        {
+            if (!useLiquidChiField || _kExt == null || _extIds.Buoyancy < 0)
+            {
+                Debug.LogError("[CSISF] AddBuoyancyToVelocity только в SFComputeKernelsContainer при включённом χ-поле.");
+                return;
+            }
+            Vector3 a = dir.normalized * (beta * dt);
+            BindExtKernelUniforms();
+            _kExt.SetFloat("_BuoyAX", a.x);
+            _kExt.SetFloat("_BuoyAY", a.y);
+            _kExt.SetFloat("_BuoyAZ", a.z);
+            _kExt.SetBuffer(_extIds.Buoyancy, "_ChiField", _liquidChi);
+            _kExt.SetBuffer(_extIds.Buoyancy, "_VX", vel.vx);
+            _kExt.SetBuffer(_extIds.Buoyancy, "_VY", vel.vy);
+            _kExt.SetBuffer(_extIds.Buoyancy, "_VZ", vel.vz);
+            _kExt.Dispatch(_extIds.Buoyancy, Groups1D, 1, 1);
+            // Горизонтальный снос убираем, вертикаль (плавучесть) — нет.
+            RemoveMeanHorizontalVelocity(vel);
+            PressureProject(vel);
+            ApplyGasVacuumFromChi();
+        }
+
+        /// <summary>Источник дыма: χ → max(χ, value) в ячейках маски. Требует <see cref="useLiquidChiField"/>.</summary>
+        public void InjectChi(ComputeBuffer mask, float value)
+        {
+            if (!useLiquidChiField || _kExt == null || _extIds.InjectChi < 0)
+                return;
+            BindExtKernelUniforms();
+            _kExt.SetFloat("_ChiInjectValue", value);
+            _kExt.SetBuffer(_extIds.InjectChi, "_ChiRW", _liquidChi);
+            _kExt.SetBuffer(_extIds.InjectChi, "_IsJet", mask);
+            _kExt.Dispatch(_extIds.InjectChi, Groups1D, 1, 1);
+        }
+
+        /// <summary>Вытяжка: χ *= decay в ячейках маски (сток дыма). Требует <see cref="useLiquidChiField"/>.</summary>
+        public void VentChiSink(ComputeBuffer mask, float decay)
+        {
+            if (!useLiquidChiField || _kExt == null || _extIds.ChiSink < 0)
+                return;
+            BindExtKernelUniforms();
+            _kExt.SetFloat("_ChiVentDecay", Mathf.Clamp01(decay));
+            _kExt.SetBuffer(_extIds.ChiSink, "_ChiRW", _liquidChi);
+            _kExt.SetBuffer(_extIds.ChiSink, "_IsJet", mask);
+            _kExt.Dispatch(_extIds.ChiSink, Groups1D, 1, 1);
+        }
+
+        /// <summary>Турбулентная диффузия χ: расширяет султан и даёт растекание дыма. alpha = D·dt/h² ∈ [0, ~0.16].</summary>
+        public void DiffuseChi(float alpha)
+        {
+            if (!useLiquidChiField || _kExt == null || _extIds.DiffuseChi < 0 || alpha <= 0f)
+                return;
+            BindExtKernelUniforms();
+            _kExt.SetFloat("_ChiDiffAlpha", Mathf.Clamp(alpha, 0f, 0.16f));
+            _kExt.SetBuffer(_extIds.DiffuseChi, "_ChiIn", _liquidChi);
+            _kExt.SetBuffer(_extIds.DiffuseChi, "_ChiOut", _liquidChiTemp);
+            _kExt.Dispatch(_extIds.DiffuseChi, Groups1D, 1, 1);
+            var swap = _liquidChi;
+            _liquidChi = _liquidChiTemp;
+            _liquidChiTemp = swap;
+        }
+
+        /// <summary>Curl-noise турбулентность: добавляет к скорости бездивергентное вихревое поле внутри дыма (клубление, боковое вовлечение).</summary>
+        public void AddCurlTurbulence(CSVelocity vel, float amp, float scale, Vector3 timeOffset, float chiLo, float chiHi)
+        {
+            if (!useLiquidChiField || _kExt == null || _extIds.CurlNoise < 0 || amp <= 0f)
+                return;
+            BindExtKernelUniforms();
+            _kExt.SetFloat("_CurlAmp", amp);
+            _kExt.SetFloat("_CurlScale", Mathf.Max(scale, 1e-4f));
+            _kExt.SetVector("_CurlTimeOffset", timeOffset);
+            _kExt.SetFloat("_CurlChiLo", chiLo);
+            _kExt.SetFloat("_CurlChiHi", chiHi);
+            _kExt.SetBuffer(_extIds.CurlNoise, "_ChiField", _liquidChi);
+            _kExt.SetBuffer(_extIds.CurlNoise, "_VX", vel.vx);
+            _kExt.SetBuffer(_extIds.CurlNoise, "_VY", vel.vy);
+            _kExt.SetBuffer(_extIds.CurlNoise, "_VZ", vel.vz);
+            _kExt.Dispatch(_extIds.CurlNoise, Groups1D, 1, 1);
         }
 
         public void ApplyJetBoundary(ComputeBuffer isJet,

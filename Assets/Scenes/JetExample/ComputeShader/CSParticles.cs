@@ -10,7 +10,11 @@ namespace ComputeShaderSF
         private ComputeShader _chiConstrainShader;
         private int _addKernel, _interpKernel, _rk4Kernel, _wrapKernel;
         private int _wallInterpKernel, _wallClampKernel;
+        private int _wallPushSolidKernel, _wallKillVentKernel;
         private int _constrainLiquidChiKernel;
+        private int _buoyantDriftKernel;
+        private int _killLowChiKernel;
+        private int _disperseKernel;
 
         private static bool s_warnedWallMissing;
 
@@ -49,16 +53,34 @@ namespace ComputeShaderSF
 
             _wallInterpKernel = -1;
             _wallClampKernel = -1;
+            _wallPushSolidKernel = -1;
+            _wallKillVentKernel = -1;
             if (_wallShader != null)
             {
                 _wallInterpKernel = _wallShader.FindKernel("InterpolateVelocity");
                 _wallClampKernel = _wallShader.FindKernel("ClampPositionsToVolume");
+                if (_wallShader.HasKernel("PushParticlesOutOfSolid"))
+                    _wallPushSolidKernel = _wallShader.FindKernel("PushParticlesOutOfSolid");
+                if (_wallShader.HasKernel("KillParticlesInVent"))
+                    _wallKillVentKernel = _wallShader.FindKernel("KillParticlesInVent");
             }
 
             _constrainLiquidChiKernel = -1;
+            _buoyantDriftKernel = -1;
             if (_chiConstrainShader != null
                 && _chiConstrainShader.HasKernel("ConstrainParticlesToLiquidChi"))
                 _constrainLiquidChiKernel = _chiConstrainShader.FindKernel("ConstrainParticlesToLiquidChi");
+            if (_chiConstrainShader != null
+                && _chiConstrainShader.HasKernel("AddBuoyantDriftToParticles"))
+                _buoyantDriftKernel = _chiConstrainShader.FindKernel("AddBuoyantDriftToParticles");
+            _killLowChiKernel = -1;
+            if (_chiConstrainShader != null
+                && _chiConstrainShader.HasKernel("KillParticlesLowChi"))
+                _killLowChiKernel = _chiConstrainShader.FindKernel("KillParticlesLowChi");
+            _disperseKernel = -1;
+            if (_chiConstrainShader != null
+                && _chiConstrainShader.HasKernel("DisperseParticlesInChi"))
+                _disperseKernel = _chiConstrainShader.FindKernel("DisperseParticlesInChi");
 
             _x = new ComputeBuffer(maxParticles, sizeof(float));
             _y = new ComputeBuffer(maxParticles, sizeof(float));
@@ -254,6 +276,109 @@ namespace ComputeShaderSF
             _wallShader.SetBuffer(_wallClampKernel, "_PosY", _y);
             _wallShader.SetBuffer(_wallClampKernel, "_PosZ", _z);
             _wallShader.Dispatch(_wallClampKernel, (_size + 255) / 256, 1, 1);
+        }
+
+        /// <summary>Выталкивание трассеров из твёрдых ячеек (стены/перегородка) по маске солида. Только при наличии wall-шейдера.</summary>
+        public void PushOutOfSolid(ComputeBuffer solidMask, int searchCells = 4)
+        {
+            if (_size == 0 || _wallShader == null || _wallPushSolidKernel < 0 || solidMask == null)
+                return;
+            SetTorusUniforms(_wallShader);
+            _wallShader.SetInt("_ParticleCount", _size);
+            _wallShader.SetInt("_PushSearchCells", Mathf.Max(1, searchCells));
+            _wallShader.SetBuffer(_wallPushSolidKernel, "_SolidMask", solidMask);
+            _wallShader.SetBuffer(_wallPushSolidKernel, "_PosX", _x);
+            _wallShader.SetBuffer(_wallPushSolidKernel, "_PosY", _y);
+            _wallShader.SetBuffer(_wallPushSolidKernel, "_PosZ", _z);
+            _wallShader.Dispatch(_wallPushSolidKernel, (_size + 255) / 256, 1, 1);
+        }
+
+        /// <summary>
+        /// Дрейф всплытия трассеров дыма (drift-flux): частицы внутри дыма (χ ≥ порога) поднимаются вместе с дымом
+        /// сквозь спокойный воздух, где поле скорости замаскировано нулём. Требует χ-constrain шейдер.
+        /// </summary>
+        public void AddBuoyantDrift(ComputeBuffer liquidChi, Vector3 drift, float dt,
+            float chiLo, float chiHi)
+        {
+            if (_size == 0 || liquidChi == null || _buoyantDriftKernel < 0 || _chiConstrainShader == null)
+                return;
+            _chiConstrainShader.SetInt("_TorResX", _torResX);
+            _chiConstrainShader.SetInt("_TorResY", _torResY);
+            _chiConstrainShader.SetInt("_TorResZ", _torResZ);
+            _chiConstrainShader.SetFloat("_TorDX", _torDX);
+            _chiConstrainShader.SetFloat("_TorDY", _torDY);
+            _chiConstrainShader.SetFloat("_TorDZ", _torDZ);
+            _chiConstrainShader.SetInt("_ParticleCount", _size);
+            _chiConstrainShader.SetVector("_Drift", drift);
+            _chiConstrainShader.SetFloat("_DriftDT", dt);
+            _chiConstrainShader.SetFloat("_DriftChiLo", chiLo);
+            _chiConstrainShader.SetFloat("_DriftChiHi", chiHi);
+            _chiConstrainShader.SetBuffer(_buoyantDriftKernel, "_PosX", _x);
+            _chiConstrainShader.SetBuffer(_buoyantDriftKernel, "_PosY", _y);
+            _chiConstrainShader.SetBuffer(_buoyantDriftKernel, "_PosZ", _z);
+            _chiConstrainShader.SetBuffer(_buoyantDriftKernel, "_LiquidChi", liquidChi);
+            _chiConstrainShader.Dispatch(_buoyantDriftKernel, (_size + 255) / 256, 1, 1);
+        }
+
+        /// <summary>Удалить трассеры, ушедшие из дыма (χ ниже порога): убирает статичный «замёрзший» шар в неподвижном воздухе.</summary>
+        public void KillLowChi(ComputeBuffer liquidChi, float threshold)
+        {
+            if (_size == 0 || liquidChi == null || _killLowChiKernel < 0 || _chiConstrainShader == null)
+                return;
+            _chiConstrainShader.SetInt("_TorResX", _torResX);
+            _chiConstrainShader.SetInt("_TorResY", _torResY);
+            _chiConstrainShader.SetInt("_TorResZ", _torResZ);
+            _chiConstrainShader.SetFloat("_TorDX", _torDX);
+            _chiConstrainShader.SetFloat("_TorDY", _torDY);
+            _chiConstrainShader.SetFloat("_TorDZ", _torDZ);
+            _chiConstrainShader.SetInt("_ParticleCount", _size);
+            _chiConstrainShader.SetFloat("_KillChiThreshold", threshold);
+            _chiConstrainShader.SetBuffer(_killLowChiKernel, "_PosX", _x);
+            _chiConstrainShader.SetBuffer(_killLowChiKernel, "_PosY", _y);
+            _chiConstrainShader.SetBuffer(_killLowChiKernel, "_PosZ", _z);
+            _chiConstrainShader.SetBuffer(_killLowChiKernel, "_LiquidChi", liquidChi);
+            _chiConstrainShader.Dispatch(_killLowChiKernel, (_size + 255) / 256, 1, 1);
+        }
+
+        /// <summary>Турбулентная дисперсия трассеров внутри дыма (случайное блуждание, взвешено по χ) — расширяет султан.</summary>
+        public void DisperseInChi(ComputeBuffer liquidChi, float sigma, int seed, float threshold)
+        {
+            if (_size == 0 || liquidChi == null || _disperseKernel < 0 || _chiConstrainShader == null
+                || sigma <= 0f)
+                return;
+            _chiConstrainShader.SetInt("_TorResX", _torResX);
+            _chiConstrainShader.SetInt("_TorResY", _torResY);
+            _chiConstrainShader.SetInt("_TorResZ", _torResZ);
+            _chiConstrainShader.SetFloat("_TorDX", _torDX);
+            _chiConstrainShader.SetFloat("_TorDY", _torDY);
+            _chiConstrainShader.SetFloat("_TorDZ", _torDZ);
+            _chiConstrainShader.SetInt("_ParticleCount", _size);
+            _chiConstrainShader.SetFloat("_DisperseSigma", sigma);
+            _chiConstrainShader.SetInt("_DisperseSeed", seed);
+            _chiConstrainShader.SetFloat("_DisperseChiThreshold", threshold);
+            _chiConstrainShader.SetBuffer(_disperseKernel, "_PosX", _x);
+            _chiConstrainShader.SetBuffer(_disperseKernel, "_PosY", _y);
+            _chiConstrainShader.SetBuffer(_disperseKernel, "_PosZ", _z);
+            _chiConstrainShader.SetBuffer(_disperseKernel, "_LiquidChi", liquidChi);
+            _chiConstrainShader.Dispatch(_disperseKernel, (_size + 255) / 256, 1, 1);
+        }
+
+        /// <summary>Пометить трассеры в зоне вытяжки как «мёртвые» (вынос за границы); удаляются последующим <see cref="CompactParticles"/>.</summary>
+        public void KillInVent(Vector3 ventMin, Vector3 ventMax)
+        {
+            if (_size == 0 || _wallShader == null || _wallKillVentKernel < 0)
+                return;
+            _wallShader.SetInt("_ParticleCount", _size);
+            _wallShader.SetFloat("_VentMinX", ventMin.x);
+            _wallShader.SetFloat("_VentMinY", ventMin.y);
+            _wallShader.SetFloat("_VentMinZ", ventMin.z);
+            _wallShader.SetFloat("_VentMaxX", ventMax.x);
+            _wallShader.SetFloat("_VentMaxY", ventMax.y);
+            _wallShader.SetFloat("_VentMaxZ", ventMax.z);
+            _wallShader.SetBuffer(_wallKillVentKernel, "_PosX", _x);
+            _wallShader.SetBuffer(_wallKillVentKernel, "_PosY", _y);
+            _wallShader.SetBuffer(_wallKillVentKernel, "_PosZ", _z);
+            _wallShader.Dispatch(_wallKillVentKernel, (_size + 255) / 256, 1, 1);
         }
 
         /// <summary>

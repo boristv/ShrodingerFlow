@@ -24,7 +24,9 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         /// <summary>Вид сверху (XZ): кольцо слева, нормаль +X; кольцо с большой Z, нормаль −Z; плоскости перпендикулярны, встреча в центре объёма.</summary>
         ObliqueRingCollision,
         /// <summary>Домен = внутренность ёмкости; стенки — penalization в полосе у границ; начальное состояние — прямой блок жидкости. Гравитация и вязкость — через существующие поля.</summary>
-        RectangularContainer
+        RectangularContainer,
+        /// <summary>Цифровой двойник распространения дыма: помещение из 2 комнат с проёмом (стены — penalization), источник дыма (инжекция χ + плавучесть), вытяжка (сток χ + подсос + удаление трассеров).</summary>
+        RoomSmoke
     }
 
     [Header("Compute Shaders")]
@@ -102,6 +104,54 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     [Tooltip("Мягкая зона у порога χ: пока сэмпл χ ≥ (порог − margin), подтяжка не включается — меньше скачков на границе жидкости.")]
     [SerializeField, Range(0.02f, 0.25f)] private float _liquidParticleChiSoftMargin = 0.1f;
 
+    [Header("Помещение с дымом (RoomSmoke)")]
+    [Tooltip("Толщина внешних стен помещения (penalization), в единицах vol_size.")]
+    [SerializeField] private float _roomWallThickness = 0.12f;
+    [Tooltip("Координата X внутренней перегородки между двумя комнатами.")]
+    [SerializeField] private float _roomPartitionX = 2f;
+    [Tooltip("Полутолщина перегородки по X.")]
+    [SerializeField] private float _roomPartitionThickness = 0.12f;
+    [Tooltip("Центр дверного проёма по Z.")]
+    [SerializeField] private float _roomDoorCenterZ = 2f;
+    [Tooltip("Ширина дверного проёма по Z.")]
+    [SerializeField] private float _roomDoorWidth = 1f;
+    [Tooltip("Высота дверного проёма от пола (Y).")]
+    [SerializeField] private float _roomDoorHeight = 1.5f;
+
+    [Tooltip("Центр зоны источника дыма (комната A), координаты объёма.")]
+    [SerializeField] private Vector3 _roomSourceCenter = new Vector3(0.9f, 0.45f, 2f);
+    [Tooltip("Полуразмер зоны источника дыма (AABB).")]
+    [SerializeField] private Vector3 _roomSourceHalf = new Vector3(0.22f, 0.22f, 0.22f);
+    [Tooltip("Начальная скорость выброса дыма из источника (горячий выброс вверх). k = v/ℏ.")]
+    [SerializeField] private Vector3 _roomEmitVelocity = new Vector3(0f, 0.6f, 0f);
+    [Tooltip("Значение концентрации χ, нагнетаемое в источнике каждый шаг.")]
+    [SerializeField, Range(0f, 1f)] private float _roomChiInject = 1f;
+
+    [Tooltip("Центр зоны вытяжки (комната B, у потолка), координаты объёма.")]
+    [SerializeField] private Vector3 _roomVentCenter = new Vector3(3.1f, 2.5f, 2f);
+    [Tooltip("Полуразмер зоны вытяжки (AABB).")]
+    [SerializeField] private Vector3 _roomVentHalf = new Vector3(0.4f, 0.22f, 0.5f);
+    [Tooltip("Скорость подсоса вытяжки (втягивающее граничное условие на u). k = v/ℏ.")]
+    [SerializeField] private Vector3 _roomVentSuction = new Vector3(0f, 1.2f, 0f);
+    [Tooltip("Доля дыма, остающаяся в зоне вытяжки за шаг (сток χ): меньше = сильнее вытягивает.")]
+    [SerializeField, Range(0f, 1f)] private float _roomVentDecay = 0.8f;
+
+    [Tooltip("Коэффициент плавучести β: u += β·χ·dir·dt (горячий дым легче воздуха → подъём).")]
+    [SerializeField] private float _roomBuoyancyBeta = 6f;
+    [Tooltip("Направление плавучести (обычно +Y).")]
+    [SerializeField] private Vector3 _roomBuoyancyDir = new Vector3(0f, 1f, 0f);
+    [Tooltip("Скорость всплытия дыма относительно воздуха (drift-flux): несёт χ и трассеры вверх сквозь спокойный воздух. Разрывает «блокировку» маски скорости.")]
+    [SerializeField] private float _roomSmokeRiseSpeed = 0.6f;
+    [Tooltip("Турбулентная диффузия дыма χ за шаг (alpha = D·dt/h²). Расширяет султан и даёт растекание под потолком/через проём. Стабильно до ~0.16.")]
+    [SerializeField, Range(0f, 0.16f)] private float _roomSmokeDiffusion = 0.08f;
+    [Tooltip("Турбулентная дисперсия трассеров внутри дыма (в долях ячейки): случайное блуждание, расширяющее столб в клубящееся облако.")]
+    [SerializeField, Range(0f, 1f)] private float _roomTracerDispersion = 0.15f;
+    [Tooltip("Амплитуда curl-noise турбулентности (вихревое поле скорости внутри дыма): клубление и боковое вовлечение, столб перестаёт быть прямым.")]
+    [SerializeField] private float _roomTurbAmplitude = 0.6f;
+    [Tooltip("Пространственная частота curl-noise (1/world): крупнее → крупные вихри, мельче → мелкая турбулентность.")]
+    [SerializeField] private float _roomTurbScale = 1.6f;
+    private float _curlTime;
+
     [Header("Cigarette — example_cigarette.hip")]
     [Tooltip("Фоновый поток U для начальной плоской волны (k = U/hbar).")]
     [SerializeField] private Vector3 _cigaretteBackgroundU = new Vector3(0.1f, 0f, 0f);
@@ -139,6 +189,8 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     private CSParticles _particles;
     private CSVelocity _vel;
     private ComputeBuffer _maskBuf1, _maskBuf2;
+    private ComputeBuffer _roomWallMaskBuf, _roomSourceMaskBuf, _roomVentMaskBuf;
+    private Vector3 _roomVentMin, _roomVentMax;
 
     private ParticleGpuBuffers _particleBuffers;
     private ParticleDisplay3D _particleDisplay;
@@ -167,6 +219,10 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
 
     public float SimulationParticleSize => _particleSize;
 
+    /// <summary>Сценарии, которым нужен расширенный ISF (стенки сетки, χ, среднее u) и стеночный шейдер частиц.</summary>
+    private bool UsesContainerExt =>
+        _scenario == ScenarioType.RectangularContainer || _scenario == ScenarioType.RoomSmoke;
+
 #if UNITY_EDITOR
     private const string ParticlesChiConstrainAssetPath =
         "Assets/Scenes/JetExample/ComputeShader/SFComputeParticlesChiConstrain.compute";
@@ -182,7 +238,8 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         if (_particlesChiConstrainShader != null)
             return _particlesChiConstrainShader;
 #if UNITY_EDITOR
-        if (_scenario == ScenarioType.RectangularContainer && _useLiquidChiField)
+        if ((_scenario == ScenarioType.RectangularContainer && _useLiquidChiField)
+            || _scenario == ScenarioType.RoomSmoke)
             return AssetDatabase.LoadAssetAtPath<ComputeShader>(ParticlesChiConstrainAssetPath);
 #endif
         return null;
@@ -193,7 +250,7 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         if (_containerIsfShader != null)
             return _containerIsfShader;
 #if UNITY_EDITOR
-        if (_scenario == ScenarioType.RectangularContainer)
+        if (UsesContainerExt)
             return AssetDatabase.LoadAssetAtPath<ComputeShader>(ContainerIsfAssetPath);
 #endif
         return null;
@@ -204,7 +261,7 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         if (_particlesWallShader != null)
             return _particlesWallShader;
 #if UNITY_EDITOR
-        if (_scenario == ScenarioType.RectangularContainer)
+        if (UsesContainerExt)
             return AssetDatabase.LoadAssetAtPath<ComputeShader>(ParticlesWallAssetPath);
 #endif
         return null;
@@ -218,13 +275,17 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         _particleDisplay = GetComponent<ParticleDisplay3D>();
 
         _isf = new CSISF();
-        ComputeShader containerIsf = _scenario == ScenarioType.RectangularContainer
-            ? ResolveContainerIsfShader()
-            : null;
+        bool roomSmoke = _scenario == ScenarioType.RoomSmoke;
+        ComputeShader containerIsf = UsesContainerExt ? ResolveContainerIsfShader() : null;
         _isf.Init(_kernelsShader, _fftShader, _lesShader, vol_size, vol_res, hbar, dt, containerIsf);
-        _isf.clampGridBorders = _scenario == ScenarioType.RectangularContainer;
-        _isf.useLiquidChiField = _scenario == ScenarioType.RectangularContainer && _useLiquidChiField;
+        _isf.clampGridBorders = UsesContainerExt;
+        _isf.useLiquidChiField =
+            (_scenario == ScenarioType.RectangularContainer && _useLiquidChiField) || roomSmoke;
         _isf.liquidChiThreshold = _liquidChiThreshold;
+        // Дым = χ-«фаза» (как жидкость в контейнере): воздух (χ<порога) → ψ вакуум и u=0 (спокоен, без FFT-шума),
+        // дым (χ≥порога) когерентно поднимается плавучестью. Без этого подавления резкие границы разносятся FFT в шум.
+        _isf.chiAffectsPsiVacuum = true;
+        _isf.maskVelocityWithChi = true;
 
         bool oneTimeParticles = _scenario == ScenarioType.LeapfrogRings
                              || _scenario == ScenarioType.ObliqueRingCollision
@@ -269,16 +330,20 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
             _particleSizeSyncedForDisplay = _particleSize;
 
 #if UNITY_EDITOR
-        if (_scenario == ScenarioType.RectangularContainer && _containerIsfShader == null)
+        if (UsesContainerExt && _containerIsfShader == null)
             _containerIsfShader = AssetDatabase.LoadAssetAtPath<ComputeShader>(ContainerIsfAssetPath);
-        if (_scenario == ScenarioType.RectangularContainer && _particlesWallShader == null)
+        if (UsesContainerExt && _particlesWallShader == null)
             _particlesWallShader = AssetDatabase.LoadAssetAtPath<ComputeShader>(ParticlesWallAssetPath);
 #endif
 
         if (_initialized && _isf != null)
         {
-            _isf.useLiquidChiField = _scenario == ScenarioType.RectangularContainer && _useLiquidChiField;
+            bool roomSmoke = _scenario == ScenarioType.RoomSmoke;
+            _isf.useLiquidChiField =
+                (_scenario == ScenarioType.RectangularContainer && _useLiquidChiField) || roomSmoke;
             _isf.liquidChiThreshold = _liquidChiThreshold;
+            _isf.chiAffectsPsiVacuum = true;
+            _isf.maskVelocityWithChi = true;
         }
     }
 
@@ -310,10 +375,13 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                 ApplyLiquidChiParticleConstrain();
 
             if (_spawnEachStep
-                && (_scenario == ScenarioType.Jet || _scenario == ScenarioType.Cigarette))
+                && (_scenario == ScenarioType.Jet || _scenario == ScenarioType.Cigarette
+                    || _scenario == ScenarioType.RoomSmoke))
             {
+                // RoomSmoke компактим чаще: трассеры гибнут в вытяжке и должны быстро освобождать место.
+                int compactEvery = _scenario == ScenarioType.RoomSmoke ? 12 : 60;
                 _compactCounter++;
-                if (_compactCounter >= 60)
+                if (_compactCounter >= compactEvery)
                 {
                     _compactCounter = 0;
                     _particles.CompactParticles(_pxArr, _pyArr, _pzArr,
@@ -330,6 +398,9 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     {
         _maskBuf1?.Release();
         _maskBuf2?.Release();
+        _roomWallMaskBuf?.Release();
+        _roomSourceMaskBuf?.Release();
+        _roomVentMaskBuf?.Release();
         _vel?.Dispose();
         _particles?.Dispose();
         _isf?.Dispose();
@@ -441,6 +512,22 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                 _spawnEachStep = false;
                 _boundaryEachStep = true;
                 break;
+
+            case ScenarioType.RoomSmoke:
+                InitPsiUniform();
+                _roomWallMaskBuf = BuildRoomLayoutMask();
+                _roomSourceMaskBuf = BuildBoxMask(_roomSourceCenter, _roomSourceHalf);
+                _roomVentMaskBuf = BuildBoxMask(_roomVentCenter, _roomVentHalf);
+                _roomVentMin = _roomVentCenter - _roomVentHalf;
+                _roomVentMax = _roomVentCenter + _roomVentHalf;
+                UploadInitialChiZero();
+                _kvecX = _kvecY = _kvecZ = 0f;
+                _omega = 0f;
+                RunInitBoundary(_roomWallMaskBuf, 0f, 0f, 0f, 0f, 10);
+                _particlesCount = 0;
+                _spawnEachStep = true;
+                _boundaryEachStep = true;
+                break;
         }
     }
 
@@ -531,6 +618,13 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                        && pz >= fmin.z && pz <= fmax.z;
             chi[i] = inside ? 1f : 0f;
         }
+        _isf.UploadLiquidChi(chi);
+    }
+
+    /// <summary>RoomSmoke: чистый воздух — χ=0 по всему объёму (дым появляется только из источника).</summary>
+    private void UploadInitialChiZero()
+    {
+        var chi = new float[_isf.num];
         _isf.UploadLiquidChi(chi);
     }
 
@@ -723,6 +817,77 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         return buf;
     }
 
+    /// <summary>Маска AABB (1 внутри коробки center±half) в координатах объёма.</summary>
+    private ComputeBuffer BuildBoxMask(Vector3 center, Vector3 half)
+    {
+        int num = _isf.num;
+        var mask = new int[num];
+        Vector3 bmin = center - half;
+        Vector3 bmax = center + half;
+        for (int i = 0; i < num; i++)
+        {
+            float px = _isf.pxCPU[i], py = _isf.pyCPU[i], pz = _isf.pzCPU[i];
+            bool inside = px >= bmin.x && px <= bmax.x
+                       && py >= bmin.y && py <= bmax.y
+                       && pz >= bmin.z && pz <= bmax.z;
+            mask[i] = inside ? 1 : 0;
+        }
+        var buf = new ComputeBuffer(num, sizeof(int));
+        buf.SetData(mask);
+        return buf;
+    }
+
+    /// <summary>
+    /// Маска твёрдого тела помещения: внешние стены (полоса у границ домена) + внутренняя перегородка по X
+    /// с дверным проёмом (z вокруг центра, y ниже высоты двери). Из солида вычитаются зоны источника и вытяжки,
+    /// чтобы они оставались открытыми.
+    /// </summary>
+    private ComputeBuffer BuildRoomLayoutMask()
+    {
+        int num = _isf.num;
+        var mask = new int[num];
+        float t = Mathf.Max(0f, _roomWallThickness);
+        float wx = vol_size[0], wy = vol_size[1], wz = vol_size[2];
+        float halfPart = Mathf.Max(0f, _roomPartitionThickness);
+        float doorZmin = _roomDoorCenterZ - _roomDoorWidth * 0.5f;
+        float doorZmax = _roomDoorCenterZ + _roomDoorWidth * 0.5f;
+
+        Vector3 srcMin = _roomSourceCenter - _roomSourceHalf;
+        Vector3 srcMax = _roomSourceCenter + _roomSourceHalf;
+        Vector3 ventMin = _roomVentCenter - _roomVentHalf;
+        Vector3 ventMax = _roomVentCenter + _roomVentHalf;
+
+        for (int i = 0; i < num; i++)
+        {
+            float px = _isf.pxCPU[i], py = _isf.pyCPU[i], pz = _isf.pzCPU[i];
+
+            bool border = px < t || px > wx - t
+                       || py < t || py > wy - t
+                       || pz < t || pz > wz - t;
+
+            bool partition = Mathf.Abs(px - _roomPartitionX) <= halfPart;
+            bool door = pz >= doorZmin && pz <= doorZmax && py <= _roomDoorHeight;
+            bool solid = border || (partition && !door);
+
+            if (solid)
+            {
+                bool inSource = px >= srcMin.x && px <= srcMax.x
+                             && py >= srcMin.y && py <= srcMax.y
+                             && pz >= srcMin.z && pz <= srcMax.z;
+                bool inVent = px >= ventMin.x && px <= ventMax.x
+                           && py >= ventMin.y && py <= ventMax.y
+                           && pz >= ventMin.z && pz <= ventMax.z;
+                if (inSource || inVent)
+                    solid = false;
+            }
+
+            mask[i] = solid ? 1 : 0;
+        }
+        var buf = new ComputeBuffer(num, sizeof(int));
+        buf.SetData(mask);
+        return buf;
+    }
+
     private void ComputeKvecAndOmega(Vector3 vel)
     {
         _kvecX = vel.x / hbar;
@@ -761,6 +926,12 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
 
     private void SimulationStep()
     {
+        if (_scenario == ScenarioType.RoomSmoke)
+        {
+            SimulationStepRoomSmoke();
+            return;
+        }
+
         _isf.kinematicViscosity = _kinematicViscosity;
         _isf.clampGridBorders = _scenario == ScenarioType.RectangularContainer;
         _isf.liquidChiThreshold = _liquidChiThreshold;
@@ -835,6 +1006,74 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
             _liquidParticleConstrainStrength, gdir, gPerCell, _liquidParticleChiSoftMargin);
     }
 
+    /// <summary>
+    /// Шаг цифрового двойника дыма: ISF → стены/перегородка (solid) + источник (jet ↑) + вытяжка (подсос) →
+    /// инжекция χ и спавн трассеров → плавучесть(χ) → адвекция χ и сток в вытяжке → адвекция трассеров,
+    /// выталкивание из стен, кламп к объёму, удаление в вытяжке.
+    /// </summary>
+    private void SimulationStepRoomSmoke()
+    {
+        _isf.kinematicViscosity = _kinematicViscosity;
+        _isf.clampGridBorders = true;
+
+        _isf.UpdateSpace(_useLES, null, false);
+
+        // Граничные условия на скорость: стены k=0 (непротекание), вытяжка — подсос.
+        // Источник НЕ задаём струёй (давало «лазерный» столб) — дым поднимается плавучестью + дрейфом.
+        float invH = 1f / hbar;
+        _isf.ApplyJetBoundary(_roomWallMaskBuf, 0f, 0f, 0f, 0f);
+        _isf.ApplyJetBoundary(_roomVentMaskBuf,
+            _roomVentSuction.x * invH, _roomVentSuction.y * invH, _roomVentSuction.z * invH, 0f);
+        _isf.PressureProject();
+
+        SpawnRoomSourceParticles();
+        _isf.InjectChi(_roomSourceMaskBuf, _roomChiInject);
+
+        _isf.UpdateVelocities(_vel);
+        if (_roomBuoyancyBeta > 1e-6f)
+            _isf.ApplyBuoyancy(_roomBuoyancyDir, _roomBuoyancyBeta, _vel);
+
+        // Когерентная вихревая турбулентность (curl-noise) в дыму: клубление + боковое вовлечение,
+        // султан расширяется и перестаёт быть прямым. Анимируется во времени (эволюция вихрей).
+        if (_roomTurbAmplitude > 1e-5f)
+        {
+            _curlTime += dt;
+            float thrLo = Mathf.Max(0f, _liquidChiThreshold - 0.25f);
+            Vector3 tOff = new Vector3(_curlTime * 0.6f, _curlTime * 0.9f, _curlTime * 0.45f);
+            _isf.AddCurlTurbulence(_vel, _roomTurbAmplitude, _roomTurbScale, tOff,
+                thrLo, _liquidChiThreshold);
+        }
+
+        // Drift-flux: дым всплывает относительно воздуха — несём χ вверх даже там, где поле u замаскировано.
+        Vector3 riseDrift = _roomBuoyancyDir.normalized * _roomSmokeRiseSpeed;
+        _isf.AdvectLiquidChi(_vel, riseDrift);
+        // Турбулентная диффузия χ: расширяет султан вбок и растекает дым под потолком/через проём
+        // (маска скорости держит воздух спокойным, поэтому без диффузии дым шёл бы тонким столбом).
+        _isf.DiffuseChi(_roomSmokeDiffusion);
+        _isf.VentChiSink(_roomVentMaskBuf, _roomVentDecay);
+        // Воздух (низкий χ) — неподвижен: гасит FFT-шум и удерживает трассеры в дыму.
+        _isf.ApplyLiquidChiVelocityMask(_vel);
+
+        _particles.CalculateMovement(_vel, true);
+        // Тот же дрейф для трассеров: поднимаются вместе с дымом сквозь спокойный воздух.
+        float thr = _liquidChiThreshold;
+        _particles.AddBuoyantDrift(_isf.LiquidChiBuffer, riseDrift, dt,
+            Mathf.Max(0f, thr - 0.2f), thr);
+        // Турбулентная дисперсия: случайное блуждание трассеров внутри дыма — столб → клубящееся облако.
+        if (_roomTracerDispersion > 1e-4f)
+        {
+            float mcell = Mathf.Min(_isf.dx, Mathf.Min(_isf.dy, _isf.dz));
+            _particles.DisperseInChi(_isf.LiquidChiBuffer,
+                _roomTracerDispersion * mcell, iterator, Mathf.Max(0.05f, thr - 0.35f));
+        }
+        _particles.PushOutOfSolid(_roomWallMaskBuf, 4);
+        _particles.ClampPositionsToVolume(vol_size[0], vol_size[1], vol_size[2],
+            _containerParticleTracerJitter, iterator);
+        _particles.KillInVent(_roomVentMin, _roomVentMax);
+        // Трассеры вне дыма (рассеялись) — убрать, чтобы не копился статичный «замёрзший» шар.
+        _particles.KillLowChi(_isf.LiquidChiBuffer, Mathf.Max(0.05f, thr - 0.35f));
+    }
+
     #endregion
 
     #region Particle Spawning
@@ -878,6 +1117,26 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
 
         bool ring = _scenario != ScenarioType.Jet && _scenario != ScenarioType.Cigarette;
         _particles.AddParticles(xx, yy, zz, _nParticles, ring);
+        _particlesCount = _particles.Size;
+    }
+
+    /// <summary>Непрерывная эмиссия трассеров дыма в зоне источника (кольцевой буфер: старые перезаписываются).</summary>
+    private void SpawnRoomSourceParticles()
+    {
+        int count = _nParticles;
+        if (count <= 0) return;
+        Vector3 bmin = _roomSourceCenter - _roomSourceHalf;
+        Vector3 bmax = _roomSourceCenter + _roomSourceHalf;
+        var xx = new float[count];
+        var yy = new float[count];
+        var zz = new float[count];
+        for (int i = 0; i < count; i++)
+        {
+            xx[i] = Random.Range(bmin.x, bmax.x);
+            yy[i] = Random.Range(bmin.y, bmax.y);
+            zz[i] = Random.Range(bmin.z, bmax.z);
+        }
+        _particles.AddParticles(xx, yy, zz, count, ring: true);
         _particlesCount = _particles.Size;
     }
 
@@ -1013,7 +1272,8 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         var offset = transform.position;
 
         bool cull = _scenario == ScenarioType.Jet || _scenario == ScenarioType.Cigarette
-            || _scenario == ScenarioType.ObliqueRingCollision;
+            || _scenario == ScenarioType.ObliqueRingCollision
+            || _scenario == ScenarioType.RoomSmoke;
         float maxX = vol_size[0], maxY = vol_size[1], maxZ = vol_size[2];
         float velThreshold = maxX * maxX + maxY * maxY + maxZ * maxZ;
         int visible = 0;
@@ -1199,6 +1459,50 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         Debug.Log("[SFUnifiedCS] RectangularContainer defaults applied.");
     }
 
+    public void ApplyRoomSmokePreset(SFUnifiedRoomSmokePreset p)
+    {
+        _scenario = ScenarioType.RoomSmoke;
+        vol_size = (int[])p.vol_size?.Clone() ?? new[] { 4, 3, 4 };
+        vol_res = (int[])p.vol_res?.Clone() ?? new[] { 64, 64, 64 };
+        hbar = p.hbar;
+        dt = p.dt;
+        _roomWallThickness = p.wallThickness;
+        _roomPartitionX = p.partitionX;
+        _roomPartitionThickness = p.partitionThickness;
+        _roomDoorCenterZ = p.doorCenterZ;
+        _roomDoorWidth = p.doorWidth;
+        _roomDoorHeight = p.doorHeight;
+        _roomSourceCenter = p.sourceCenter;
+        _roomSourceHalf = p.sourceHalf;
+        _roomEmitVelocity = p.emitVelocity;
+        _roomChiInject = p.chiInject;
+        _roomVentCenter = p.ventCenter;
+        _roomVentHalf = p.ventHalf;
+        _roomVentSuction = p.ventSuction;
+        _roomVentDecay = p.ventDecay;
+        _roomBuoyancyBeta = p.buoyancyBeta;
+        _roomBuoyancyDir = p.buoyancyDir;
+        _roomSmokeRiseSpeed = p.smokeRiseSpeed;
+        _roomSmokeDiffusion = p.smokeDiffusion;
+        _roomTracerDispersion = p.tracerDispersion;
+        _roomTurbAmplitude = p.turbAmplitude;
+        _roomTurbScale = p.turbScale;
+        _kinematicViscosity = p.kinematicViscosity;
+        _nParticles = p.nParticles;
+        _particleSize = p.particleSize;
+        SyncParticleDisplayScaleFromSimulation();
+        _stepsPerFrame = p.stepsPerFrame;
+        _useLES = p.useLES;
+    }
+
+    /// <summary>Параметры из SFUnifiedScenarioPresets.roomSmoke (или встроенные при отсутствии ассета).</summary>
+    [ContextMenu("Apply Room smoke defaults")]
+    public void ApplyRoomSmokeDefaults()
+    {
+        ApplyRoomSmokePreset(ResolveScenarioPresets().roomSmoke);
+        Debug.Log("[SFUnifiedCS] RoomSmoke defaults applied.");
+    }
+
     /// <summary>Параметры как в example_cigarette.hip. Задайте до входа в Play (инициализация CSISF в Start).</summary>
     [ContextMenu("Apply Cigarette (hip) defaults")]
     public void ApplyCigaretteHipDefaults()
@@ -1320,7 +1624,31 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                 Gizmos.color = new Color(0.25f, 0.55f, 1f, 0.75f);
                 Gizmos.DrawWireCube(transform.position + fc, fsize);
                 break;
+            case ScenarioType.RoomSmoke:
+                DrawRoomSmokeGizmos();
+                break;
         }
+    }
+
+    private void DrawRoomSmokeGizmos()
+    {
+        var pos = transform.position;
+        // Перегородка с проёмом.
+        Gizmos.color = new Color(0.7f, 0.7f, 0.7f, 0.5f);
+        var partCenter = new Vector3(_roomPartitionX, vol_size[1] * 0.5f, vol_size[2] * 0.5f);
+        var partSize = new Vector3(_roomPartitionThickness * 2f, vol_size[1], vol_size[2]);
+        Gizmos.DrawWireCube(pos + partCenter, partSize);
+        // Дверной проём.
+        Gizmos.color = new Color(0.95f, 0.85f, 0.2f, 0.8f);
+        var doorCenter = new Vector3(_roomPartitionX, _roomDoorHeight * 0.5f, _roomDoorCenterZ);
+        var doorSize = new Vector3(_roomPartitionThickness * 2f, _roomDoorHeight, _roomDoorWidth);
+        Gizmos.DrawWireCube(pos + doorCenter, doorSize);
+        // Источник дыма.
+        Gizmos.color = new Color(0.2f, 0.85f, 0.3f, 0.8f);
+        Gizmos.DrawWireCube(pos + _roomSourceCenter, _roomSourceHalf * 2f);
+        // Вытяжка.
+        Gizmos.color = new Color(0.3f, 0.6f, 1f, 0.85f);
+        Gizmos.DrawWireCube(pos + _roomVentCenter, _roomVentHalf * 2f);
     }
 
     #endregion

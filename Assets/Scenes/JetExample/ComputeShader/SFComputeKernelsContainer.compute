@@ -16,6 +16,11 @@
 #pragma kernel MaskVelocityByLiquidChi
 #pragma kernel SumHorizontalVelocityPartial
 #pragma kernel SubtractHorizontalVelocityMean
+#pragma kernel AddBuoyancyToVelocity
+#pragma kernel InjectChiSource
+#pragma kernel ChiSinkVent
+#pragma kernel DiffuseChi
+#pragma kernel AddCurlNoiseTurbulence
 
 RWStructuredBuffer<float2> _Psi1;
 RWStructuredBuffer<float2> _Psi2;
@@ -58,6 +63,10 @@ StructuredBuffer<float>   _ChiField;
 float _BoundX;
 float _BoundY;
 float _BoundZ;
+// Дрейф всплытия дыма относительно воздуха (drift-flux): добавляется к скорости переноса χ.
+float _ChiDriftX;
+float _ChiDriftY;
+float _ChiDriftZ;
 float _ChiLiqThreshold;
 float _Vac1R;
 float _Vac1I;
@@ -67,6 +76,22 @@ float _Vac2I;
 RWStructuredBuffer<float2> _PartialVelXZSum;
 float _MeanSubX;
 float _MeanSubZ;
+
+// Дым: плавучесть по χ (ускорение·dt уже свёрнуто снаружи), инжекция/сток скаляра дыма.
+RWStructuredBuffer<float> _ChiRW;
+float _BuoyAX;
+float _BuoyAY;
+float _BuoyAZ;
+float _ChiInjectValue;
+float _ChiVentDecay;
+// Турбулентная диффузия дыма: alpha = D·dt/h² ∈ [0, ~0.16] (явная схема, без осцилляций).
+float _ChiDiffAlpha;
+// Curl-noise турбулентность: бездивергентное вихревое поле, добавляемое к скорости внутри дыма.
+float  _CurlAmp;          // амплитуда (в единицах скорости)
+float  _CurlScale;        // пространственная частота (1/world)
+float3 _CurlTimeOffset;   // сдвиг в noise-пространстве (анимация вихрей)
+float  _CurlChiLo;        // порог χ начала турбулентности
+float  _CurlChiHi;        // χ полной турбулентности
 
 float2 cmul(float2 a, float2 b)
 {
@@ -388,7 +413,7 @@ void AdvectLiquidChi(uint3 id : SV_DispatchThreadID)
     int i = (int)id.x;
     if (i >= _Num) return;
 
-    float3 d = float3(_VX[i], _VY[i], _VZ[i]) * _DT;
+    float3 d = (float3(_VX[i], _VY[i], _VZ[i]) + float3(_ChiDriftX, _ChiDriftY, _ChiDriftZ)) * _DT;
     float h = min(_DX, min(_DY, _DZ));
     float mag = length(d);
     float lim = 0.35 * h;
@@ -447,4 +472,130 @@ void ApplyGasVacuumPsi(uint3 id : SV_DispatchThreadID)
         return;
     _Psi1[i] = float2(_Vac1R, _Vac1I);
     _Psi2[i] = float2(_Vac2R, _Vac2I);
+}
+
+// Плавучесть Буссинеска: f = β·χ·ĝ (горячий дым легче воздуха → подъём).
+// _BuoyA* = β·dir·dt задаётся снаружи; _ChiField — концентрация дыма χ∈[0,1].
+[numthreads(256, 1, 1)]
+void AddBuoyancyToVelocity(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+    float c = _ChiField[i];
+    _VX[i] += _BuoyAX * c;
+    _VY[i] += _BuoyAY * c;
+    _VZ[i] += _BuoyAZ * c;
+}
+
+// Источник дыма: в ячейках маски (_IsJet) поднимаем χ до _ChiInjectValue (непрерывная эмиссия).
+[numthreads(256, 1, 1)]
+void InjectChiSource(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+    if (_IsJet[i] == 0) return;
+    _ChiRW[i] = max(_ChiRW[i], _ChiInjectValue);
+}
+
+// Вытяжка: в ячейках маски (_IsJet) дым удаляется со скоростью извлечения (мультипликативный сток).
+[numthreads(256, 1, 1)]
+void ChiSinkVent(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+    if (_IsJet[i] == 0) return;
+    _ChiRW[i] *= _ChiVentDecay;
+}
+
+// Турбулентная диффузия дыма: χ += alpha·(Σ6 соседей − 6χ). Границы домена — зеркальные (непериодично).
+// Даёт расширение султана и растекание под потолком/через проём.
+[numthreads(256, 1, 1)]
+void DiffuseChi(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    int iz = i % _ResZ;
+    int iy = (i / _ResZ) % _ResY;
+    int ix = i / (_ResY * _ResZ);
+    int r2 = _ResZ;
+    int r21 = _ResY * _ResZ;
+
+    int xm = (ix > 0) ? (i - r21) : i;
+    int xp = (ix < _ResX - 1) ? (i + r21) : i;
+    int ym = (iy > 0) ? (i - r2) : i;
+    int yp = (iy < _ResY - 1) ? (i + r2) : i;
+    int zm = (iz > 0) ? (i - 1) : i;
+    int zp = (iz < _ResZ - 1) ? (i + 1) : i;
+
+    float c = _ChiIn[i];
+    float sum = _ChiIn[xm] + _ChiIn[xp] + _ChiIn[ym] + _ChiIn[yp] + _ChiIn[zm] + _ChiIn[zp];
+    _ChiOut[i] = saturate(c + _ChiDiffAlpha * (sum - 6.0 * c));
+}
+
+// ---- Curl-noise турбулентность ----
+float CurlHash11(float n)
+{
+    return frac(sin(n) * 43758.5453123);
+}
+
+// Гладкий 3D value-noise в [-1,1].
+float CurlVNoise(float3 x)
+{
+    float3 p = floor(x);
+    float3 f = frac(x);
+    f = f * f * (3.0 - 2.0 * f);
+    float n = p.x + p.y * 57.0 + p.z * 113.0;
+    float n000 = CurlHash11(n);
+    float n100 = CurlHash11(n + 1.0);
+    float n010 = CurlHash11(n + 57.0);
+    float n110 = CurlHash11(n + 58.0);
+    float n001 = CurlHash11(n + 113.0);
+    float n101 = CurlHash11(n + 114.0);
+    float n011 = CurlHash11(n + 170.0);
+    float n111 = CurlHash11(n + 171.0);
+    float nx00 = lerp(n000, n100, f.x);
+    float nx10 = lerp(n010, n110, f.x);
+    float nx01 = lerp(n001, n101, f.x);
+    float nx11 = lerp(n011, n111, f.x);
+    float nxy0 = lerp(nx00, nx10, f.y);
+    float nxy1 = lerp(nx01, nx11, f.y);
+    return lerp(nxy0, nxy1, f.z) * 2.0 - 1.0;
+}
+
+float3 CurlPotential(float3 p)
+{
+    return float3(
+        CurlVNoise(p),
+        CurlVNoise(p + float3(31.416, 17.234, 47.853)),
+        CurlVNoise(p + float3(-19.34, 23.71, -11.52)));
+}
+
+// Вихревая турбулентность: к скорости внутри дыма добавляется curl(шумового потенциала) —
+// бездивергентное поле, дающее клубление и боковое вовлечение (султан расширяется, перестаёт быть прямым).
+[numthreads(256, 1, 1)]
+void AddCurlNoiseTurbulence(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    float w = smoothstep(_CurlChiLo, _CurlChiHi, _ChiField[i]);
+    if (w < 1e-4) return;
+
+    int iz = i % _ResZ;
+    int iy = (i / _ResZ) % _ResY;
+    int ix = i / (_ResY * _ResZ);
+    float3 wp = float3(ix * _DX, iy * _DY, iz * _DZ);
+    float3 p = wp * _CurlScale + _CurlTimeOffset;
+
+    float e = 0.35;
+    float3 dPdx = (CurlPotential(p + float3(e, 0, 0)) - CurlPotential(p - float3(e, 0, 0))) / (2.0 * e);
+    float3 dPdy = (CurlPotential(p + float3(0, e, 0)) - CurlPotential(p - float3(0, e, 0))) / (2.0 * e);
+    float3 dPdz = (CurlPotential(p + float3(0, 0, e)) - CurlPotential(p - float3(0, 0, e))) / (2.0 * e);
+
+    float3 curl = float3(dPdy.z - dPdz.y, dPdz.x - dPdx.z, dPdx.y - dPdy.x);
+    float a = _CurlAmp * w;
+    _VX[i] += curl.x * a;
+    _VY[i] += curl.y * a;
+    _VZ[i] += curl.z * a;
 }
