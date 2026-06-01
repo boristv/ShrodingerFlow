@@ -95,19 +95,19 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     [Tooltip("Источник дыма (оранжевый на схеме): центр и полуразмер AABB.")]
     [SerializeField] private Vector3 _mazeSourceCenter = new Vector3(0.25f, 0.5f, 1.5f);
     [SerializeField] private Vector3 _mazeSourceHalf = new Vector3(0.12f, 0.45f, 0.25f);
-    [Tooltip("Скорость выброса из источника: умеренный → +X, слабый → +Z для поиска проходов. Не 0 — иначе дым «застывает» у источника.")]
-    [SerializeField] private Vector3 _mazeEmitVelocity = new Vector3(0.18f, 0f, 0.1f);
+    [Tooltip("Скорость выброса из источника: умеренный поток вправо. Не 0 — иначе дым «застывает» у источника.")]
+    [SerializeField] private Vector3 _mazeEmitVelocity = new Vector3(0.25f, 0f, 0f);
     [Tooltip("Вытяжка (зелёная): центр и полуразмер AABB.")]
     [SerializeField] private Vector3 _mazeVentCenter = new Vector3(4.75f, 0.5f, 2.35f);
     [SerializeField] private Vector3 _mazeVentHalf = new Vector3(0.12f, 0.45f, 0.35f);
-    [Tooltip("Подсос вытяжки: втягивает воздух/дым к vent (основной драйвер потока в лабиринте).")]
-    [SerializeField] private Vector3 _mazeVentSuction = new Vector3(0.7f, 0f, 0.3f);
+    [Tooltip("Опциональный фазовый драйвер в зоне вытяжки. Обычно 0: тяга задается мягким drift, чтобы не создавать обратный поток к источнику.")]
+    [SerializeField] private Vector3 _mazeVentSuction = Vector3.zero;
     [Tooltip("Турбулентная дисперсия трассеров в плоскости XZ (доли ячейки): рассеивание для поиска смещённых проходов.")]
-    [SerializeField, Range(0f, 1f)] private float _mazeParticleDispersion = 0.32f;
+    [SerializeField, Range(0f, 1f)] private float _mazeParticleDispersion = 0.18f;
     [Tooltip("Усиление дисперсии у стен (×) — помогает огибать препятствия.")]
-    [SerializeField, Range(0f, 5f)] private float _mazeDispersionWallBoost = 2.5f;
-    [Tooltip("Слабый дрейф всех трассеров к вытяжке (м/с).")]
-    [SerializeField] private float _mazeVentDrift = 0.14f;
+    [SerializeField, Range(0f, 5f)] private float _mazeDispersionWallBoost = 1.2f;
+    [Tooltip("Скорость мягкого продольного потока трассеров по лабиринту; у стен добавляется curl.")]
+    [SerializeField] private float _mazeVentDrift = 0.12f;
     [Tooltip("Шаг обхода стены вверх/вниз к проёму (доли ячейки).")]
     [SerializeField, Range(0f, 2f)] private float _mazeWallDeflect = 0.55f;
     [Tooltip("Радиус поиска свободной ячейки при столкновении (в ячейках сетки; для проходов нужно ≥30).")]
@@ -194,7 +194,9 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                              || _scenario == ScenarioType.ObliqueRingCollision
                              || _scenario == ScenarioType.TwoSpheres
                              || _scenario == ScenarioType.InkCollision;
-        int maxParticles = oneTimeParticles ? _nParticles : _nParticles * 1000;
+        int maxParticles = oneTimeParticles
+            ? _nParticles
+            : _nParticles * (_scenario == ScenarioType.SmokeMaze2D ? 4000 : 1000);
 
         _particles = new CSParticles();
         _particles.Init(_particlesShader, maxParticles, _isf);
@@ -748,15 +750,18 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         _isf.ApplyJetBoundary(_mazeWallMaskBuf, 0f, 0f, 0f, 0f);
         _isf.ApplyJetBoundary(_mazeSourceMaskBuf,
             _mazeEmitVelocity.x * invH, _mazeEmitVelocity.y * invH, _mazeEmitVelocity.z * invH, 0f);
-        _isf.ApplyJetBoundary(_mazeVentMaskBuf,
-            _mazeVentSuction.x * invH, _mazeVentSuction.y * invH, _mazeVentSuction.z * invH, 0f);
+        if (_mazeVentSuction.sqrMagnitude > 1e-8f)
+        {
+            _isf.ApplyJetBoundary(_mazeVentMaskBuf,
+                _mazeVentSuction.x * invH, _mazeVentSuction.y * invH, _mazeVentSuction.z * invH, 0f);
+        }
         _isf.PressureProject();
 
         SpawnMazeSourceParticles();
         _isf.UpdateVelocities(_vel);
         _particles.CalculateMovement(_vel, clampSampling: true);
         _particles.DriftInSourceBox(_mazeSourceCenter, _mazeSourceHalf, _mazeEmitVelocity, dt);
-        _particles.DriftTowardVent(_mazeVentCenter, _mazeVentDrift, dt);
+        _particles.DriftTowardVent(_mazeVentCenter, _mazeVentDrift, dt, _mazeWallMaskBuf);
         float mcell = Mathf.Min(_isf.dx, _isf.dz);
         if (_mazeParticleDispersion > 1e-4f)
         {
@@ -788,7 +793,7 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
             yy[i] = Random.Range(_mazeSourceCenter.y - _mazeSourceHalf.y, _mazeSourceCenter.y + _mazeSourceHalf.y);
             zz[i] = Random.Range(_mazeSourceCenter.z - _mazeSourceHalf.z, _mazeSourceCenter.z + _mazeSourceHalf.z);
         }
-        _particles.AddParticles(xx, yy, zz, _nParticles, true);
+        _particles.AddParticles(xx, yy, zz, _nParticles);
         _particlesCount = _particles.Size;
     }
 

@@ -191,13 +191,13 @@ MonoBehaviour:
   _mazeWall3SolidMaxZ: 2
   _mazeSourceCenter: {x: 0.25, y: 0.5, z: 1.5}
   _mazeSourceHalf: {x: 0.12, y: 0.45, z: 0.45}
-  _mazeEmitVelocity: {x: 0.18, y: 0, z: 0.1}
+  _mazeEmitVelocity: {x: 0.25, y: 0, z: 0}
   _mazeVentCenter: {x: 4.75, y: 0.5, z: 2.35}
   _mazeVentHalf: {x: 0.12, y: 0.45, z: 0.35}
-  _mazeVentSuction: {x: 0.7, y: 0, z: 0.3}
-  _mazeParticleDispersion: 0.32
-  _mazeDispersionWallBoost: 2.5
-  _mazeVentDrift: 0.14
+  _mazeVentSuction: {x: 0, y: 0, z: 0}
+  _mazeParticleDispersion: 0.18
+  _mazeDispersionWallBoost: 1.2
+  _mazeVentDrift: 0.12
   _mazeWallDeflect: 0.55
   _mazePushSearchCells: 36
   _cigaretteBackgroundU: {x: 0.1, y: 0, z: 0}

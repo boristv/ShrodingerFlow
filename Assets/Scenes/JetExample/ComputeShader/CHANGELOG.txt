@@ -5,9 +5,12 @@ ScenarioType.SmokeMaze2D: упрощённая схема по эскизу — 
 
 - BuildMazeWallMask: внешние стены + 3 вертикальные перегородки со смещёнными проёмами;
   источник и вытяжка исключены из маски стен.
-- ApplyJetBoundary: стены k=0; вытяжка — подсос (_mazeVentSuction, основной драйвер потока);
+- ApplyJetBoundary: стены k=0; вытяжка по умолчанию не задаёт фазовый jet
+  (_mazeVentSuction = 0), чтобы не создавать обратную компенсационную циркуляцию;
   источник — опциональный jet (_mazeEmitVelocity, по умолчанию 0 — без «лазерной ленты»).
-- DisperseMazeParticles: турбулентное рассеивание трассеров в XZ для поиска смещённых проходов.
+- DriftMazeTowardVent: не прямой магнит к вытяжке, а продольный поток +X с локальной curl-компонентой у стен;
+  к vent по Z тянет только в правой части лабиринта.
+- DisperseMazeParticles: умеренное турбулентное рассеивание трассеров в XZ для поиска смещённых проходов.
 - Частицы спавнятся в источнике; в зоне вытяжки удаляются (CompactMazeParticles).
 - Исправление стен: InterpolateVelocity с clamp (не toroidal wrap); PushParticlesOutOfSolidMask
   + ClampPositionsToVolume; маска стен по углам ячеек; двойной ApplyJetBoundary на стенах.

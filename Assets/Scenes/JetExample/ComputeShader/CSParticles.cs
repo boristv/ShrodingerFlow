@@ -275,7 +275,7 @@ namespace ComputeShaderSF
             _shader.Dispatch(_sourceDriftKernel, (_size + 255) / 256, 1, 1);
         }
 
-        public void DriftTowardVent(Vector3 ventCenter, float strength, float stepDt)
+        public void DriftTowardVent(Vector3 ventCenter, float strength, float stepDt, ComputeBuffer solidMask = null)
         {
             if (_size == 0 || _ventDriftKernel < 0 || strength <= 0f) return;
             SetTorusUniforms();
@@ -283,6 +283,8 @@ namespace ComputeShaderSF
             _shader.SetVector("_VentDriftTarget", ventCenter);
             _shader.SetFloat("_VentDriftStrength", strength);
             _shader.SetFloat("_VentDriftDT", stepDt);
+            if (solidMask != null)
+                _shader.SetBuffer(_ventDriftKernel, "_SolidMask", solidMask);
             _shader.SetBuffer(_ventDriftKernel, "_PosX", _x);
             _shader.SetBuffer(_ventDriftKernel, "_PosY", _y);
             _shader.SetBuffer(_ventDriftKernel, "_PosZ", _z);

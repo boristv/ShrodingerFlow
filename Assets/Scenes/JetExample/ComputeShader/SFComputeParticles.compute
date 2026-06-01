@@ -297,7 +297,8 @@ void DriftMazeSourceParticles(uint3 id : SV_DispatchThreadID)
     _PosZ[i] = pz + _SourceDriftV.z * _SourceDriftDT;
 }
 
-// Слабый дрейф всех трассеров к вытяжке — тянет дым через лабиринт.
+// Мягкий продольный поток по лабиринту. Вытяжка не магнитит всю сцену напрямую:
+// у стен добавляется тангенциальная curl-компонента, а к vent по Z тянем только в правой части.
 [numthreads(256, 1, 1)]
 void DriftMazeTowardVent(uint3 id : SV_DispatchThreadID)
 {
@@ -305,13 +306,32 @@ void DriftMazeTowardVent(uint3 id : SV_DispatchThreadID)
     if (i >= _ParticleCount) return;
 
     float px = _PosX[i], py = _PosY[i], pz = _PosZ[i];
-    float3 toVent = _VentDriftTarget - float3(px, py, pz);
-    toVent.y = 0.0;
-    float len = length(toVent);
-    if (len < 1e-5) return;
-    float3 dir = toVent / len;
-    _PosX[i] = px + dir.x * _VentDriftStrength * _VentDriftDT;
-    _PosZ[i] = pz + dir.z * _VentDriftStrength * _VentDriftDT;
+    int ix = clamp((int)floor(px / _TorDX), 0, _TorResX - 1);
+    int iy = clamp((int)floor(py / _TorDY), 0, _TorResY - 1);
+    int iz = clamp((int)floor(pz / _TorDZ), 0, _TorResZ - 1);
+
+    float left = (float)SolidAt(ix - 1, iy, iz);
+    float right = (float)SolidAt(ix + 1, iy, iz);
+    float down = (float)SolidAt(ix, iy, iz - 1);
+    float up = (float)SolidAt(ix, iy, iz + 1);
+    float2 wallGrad = float2(left - right, down - up);
+    float wallProx = saturate(abs(wallGrad.x) + abs(wallGrad.y));
+
+    float2 drift = float2(1.0, 0.0);
+    if (wallProx > 1e-4)
+    {
+        float2 tangent = normalize(float2(-wallGrad.y, wallGrad.x) + 1e-5);
+        float spinSign = MazeHash01((uint)i * 747796405u + 2891336453u) < 0.5 ? -1.0 : 1.0;
+        drift += tangent * spinSign * 0.85 * wallProx;
+    }
+
+    float ventGate = smoothstep(_VentDriftTarget.x - 1.2, _VentDriftTarget.x - 0.25, px);
+    float zPull = clamp(_VentDriftTarget.z - pz, -0.8, 0.8) * 0.35 * ventGate;
+    drift += float2(0.0, zPull);
+    drift = normalize(drift + 1e-5);
+
+    _PosX[i] = px + drift.x * _VentDriftStrength * _VentDriftDT;
+    _PosZ[i] = pz + drift.y * _VentDriftStrength * _VentDriftDT;
 }
 
 // Перед стеной (+X занят): ищем открытый проём вверх/вниз и сдвигаем трассер к нему.
