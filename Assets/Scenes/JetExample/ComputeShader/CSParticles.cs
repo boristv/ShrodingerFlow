@@ -7,6 +7,11 @@ namespace ComputeShaderSF
     {
         private ComputeShader _shader;
         private int _addKernel, _interpKernel, _rk4Kernel, _wrapKernel;
+        private int _clampKernel, _pushSolidKernel;
+        private int _disperseKernel;
+        private int _sourceDriftKernel;
+        private int _ventDriftKernel;
+        private int _deflectWallKernel;
 
         private ComputeBuffer _x, _y, _z;
         private ComputeBuffer _k1x, _k1y, _k1z;
@@ -34,6 +39,24 @@ namespace ComputeShaderSF
             _interpKernel = shader.FindKernel("InterpolateVelocity");
             _rk4Kernel = shader.FindKernel("RK4Update");
             _wrapKernel = shader.FindKernel("WrapPositions");
+            _clampKernel = -1;
+            if (shader.HasKernel("ClampPositionsToVolume"))
+                _clampKernel = shader.FindKernel("ClampPositionsToVolume");
+            _pushSolidKernel = -1;
+            if (shader.HasKernel("PushParticlesOutOfSolidMask"))
+                _pushSolidKernel = shader.FindKernel("PushParticlesOutOfSolidMask");
+            _disperseKernel = -1;
+            if (shader.HasKernel("DisperseMazeParticles"))
+                _disperseKernel = shader.FindKernel("DisperseMazeParticles");
+            _sourceDriftKernel = -1;
+            if (shader.HasKernel("DriftMazeSourceParticles"))
+                _sourceDriftKernel = shader.FindKernel("DriftMazeSourceParticles");
+            _ventDriftKernel = -1;
+            if (shader.HasKernel("DriftMazeTowardVent"))
+                _ventDriftKernel = shader.FindKernel("DriftMazeTowardVent");
+            _deflectWallKernel = -1;
+            if (shader.HasKernel("DeflectMazeAtWallParticles"))
+                _deflectWallKernel = shader.FindKernel("DeflectMazeAtWallParticles");
 
             _x = new ComputeBuffer(maxParticles, sizeof(float));
             _y = new ComputeBuffer(maxParticles, sizeof(float));
@@ -111,9 +134,15 @@ namespace ComputeShaderSF
 
         public void CalculateMovement(CSVelocity vel)
         {
+            CalculateMovement(vel, false);
+        }
+
+        public void CalculateMovement(CSVelocity vel, bool clampSampling)
+        {
             if (_size == 0) return;
 
             SetTorusUniforms();
+            _shader.SetInt("_ClampSampling", clampSampling ? 1 : 0);
             _shader.SetInt("_ParticleCount", _size);
             int groups = (_size + 255) / 256;
 
@@ -186,12 +215,108 @@ namespace ComputeShaderSF
             _shader.Dispatch(_wrapKernel, (_size + 255) / 256, 1, 1);
         }
 
+        public void ClampPositionsToVolume(float volSizeX, float volSizeY, float volSizeZ)
+        {
+            if (_size == 0 || _clampKernel < 0) return;
+            _shader.SetInt("_ParticleCount", _size);
+            _shader.SetFloat("_VolSizeX", volSizeX);
+            _shader.SetFloat("_VolSizeY", volSizeY);
+            _shader.SetFloat("_VolSizeZ", volSizeZ);
+            _shader.SetBuffer(_clampKernel, "_PosX", _x);
+            _shader.SetBuffer(_clampKernel, "_PosY", _y);
+            _shader.SetBuffer(_clampKernel, "_PosZ", _z);
+            _shader.Dispatch(_clampKernel, (_size + 255) / 256, 1, 1);
+        }
+
+        public void PushOutOfSolidMask(ComputeBuffer solidMask, int searchCells, Vector3 ventTarget, float ventBiasWeight)
+        {
+            if (_size == 0 || solidMask == null || _pushSolidKernel < 0) return;
+            SetTorusUniforms();
+            _shader.SetInt("_ParticleCount", _size);
+            _shader.SetInt("_PushSearchCells", Mathf.Max(1, searchCells));
+            _shader.SetVector("_VentTarget", ventTarget);
+            _shader.SetFloat("_VentBiasWeight", ventBiasWeight);
+            _shader.SetBuffer(_pushSolidKernel, "_PosX", _x);
+            _shader.SetBuffer(_pushSolidKernel, "_PosY", _y);
+            _shader.SetBuffer(_pushSolidKernel, "_PosZ", _z);
+            _shader.SetBuffer(_pushSolidKernel, "_SolidMask", solidMask);
+            _shader.Dispatch(_pushSolidKernel, (_size + 255) / 256, 1, 1);
+        }
+
+        /// <summary>Случайный шаг в плоскости XZ — турбулентное рассеивание; у стен усилено через маску.</summary>
+        public void DisperseMaze(ComputeBuffer solidMask, float sigma, float wallBoost, int seed)
+        {
+            if (_size == 0 || _disperseKernel < 0 || sigma <= 0f) return;
+            SetTorusUniforms();
+            _shader.SetInt("_ParticleCount", _size);
+            _shader.SetFloat("_DisperseSigma", sigma);
+            _shader.SetFloat("_DisperseWallBoost", wallBoost);
+            _shader.SetInt("_DisperseSeed", seed);
+            if (solidMask != null)
+                _shader.SetBuffer(_disperseKernel, "_SolidMask", solidMask);
+            _shader.SetBuffer(_disperseKernel, "_PosX", _x);
+            _shader.SetBuffer(_disperseKernel, "_PosY", _y);
+            _shader.SetBuffer(_disperseKernel, "_PosZ", _z);
+            _shader.Dispatch(_disperseKernel, (_size + 255) / 256, 1, 1);
+        }
+
+        public void DriftInSourceBox(Vector3 center, Vector3 half, Vector3 velocity, float stepDt)
+        {
+            if (_size == 0 || _sourceDriftKernel < 0 || velocity.sqrMagnitude < 1e-12f) return;
+            SetTorusUniforms();
+            _shader.SetInt("_ParticleCount", _size);
+            _shader.SetVector("_SourceCenter", center);
+            _shader.SetVector("_SourceHalf", half);
+            _shader.SetVector("_SourceDriftV", velocity);
+            _shader.SetFloat("_SourceDriftDT", stepDt);
+            _shader.SetBuffer(_sourceDriftKernel, "_PosX", _x);
+            _shader.SetBuffer(_sourceDriftKernel, "_PosY", _y);
+            _shader.SetBuffer(_sourceDriftKernel, "_PosZ", _z);
+            _shader.Dispatch(_sourceDriftKernel, (_size + 255) / 256, 1, 1);
+        }
+
+        public void DriftTowardVent(Vector3 ventCenter, float strength, float stepDt)
+        {
+            if (_size == 0 || _ventDriftKernel < 0 || strength <= 0f) return;
+            SetTorusUniforms();
+            _shader.SetInt("_ParticleCount", _size);
+            _shader.SetVector("_VentDriftTarget", ventCenter);
+            _shader.SetFloat("_VentDriftStrength", strength);
+            _shader.SetFloat("_VentDriftDT", stepDt);
+            _shader.SetBuffer(_ventDriftKernel, "_PosX", _x);
+            _shader.SetBuffer(_ventDriftKernel, "_PosY", _y);
+            _shader.SetBuffer(_ventDriftKernel, "_PosZ", _z);
+            _shader.Dispatch(_ventDriftKernel, (_size + 255) / 256, 1, 1);
+        }
+
+        public void DeflectAtWall(ComputeBuffer solidMask, float stepWorld, int searchCells)
+        {
+            if (_size == 0 || solidMask == null || _deflectWallKernel < 0 || stepWorld <= 0f) return;
+            SetTorusUniforms();
+            _shader.SetInt("_ParticleCount", _size);
+            _shader.SetFloat("_DeflectStep", stepWorld);
+            _shader.SetInt("_DeflectSearchCells", Mathf.Max(4, searchCells));
+            _shader.SetBuffer(_deflectWallKernel, "_SolidMask", solidMask);
+            _shader.SetBuffer(_deflectWallKernel, "_PosX", _x);
+            _shader.SetBuffer(_deflectWallKernel, "_PosY", _y);
+            _shader.SetBuffer(_deflectWallKernel, "_PosZ", _z);
+            _shader.Dispatch(_deflectWallKernel, (_size + 255) / 256, 1, 1);
+        }
+
         public void ReadPositions(float[] outX, float[] outY, float[] outZ)
         {
             if (_size == 0) return;
             _x.GetData(outX, 0, 0, _size);
             _y.GetData(outY, 0, 0, _size);
             _z.GetData(outZ, 0, 0, _size);
+        }
+
+        public void WritePositions(float[] px, float[] py, float[] pz, int count)
+        {
+            if (count <= 0 || count > _size) return;
+            _x.SetData(px, 0, 0, count);
+            _y.SetData(py, 0, 0, count);
+            _z.SetData(pz, 0, 0, count);
         }
 
         /// <param name="reorderAux1">

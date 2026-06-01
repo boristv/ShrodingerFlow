@@ -27,6 +27,9 @@ public class SFUnifiedScenarioPresets : ScriptableObject
     [Header("LeapfrogRings — UnifiedCS.unity (кольца + spawn), vol 10×5×5")]
     public SFUnifiedLeapfrogRingsPreset leapfrogRings;
 
+    [Header("SmokeMaze2D — 2D-лабиринт: источник слева, 3 перегородки, вытяжка справа")]
+    public SFUnifiedSmokeMaze2DPreset smokeMaze2D;
+
     /// <summary>Встроенные значения (копия референсных сцен на момент добавления).</summary>
     public static SFUnifiedScenarioPresets CreateBuiltIn()
     {
@@ -139,6 +142,39 @@ public class SFUnifiedScenarioPresets : ScriptableObject
             stepsPerFrame = 3,
             useLES = false
         };
+
+        // 2D-лабиринт 5×1×3 (вид сверху XZ): источник слева, 3 перегородки со смещёнными проходами, вытяжка справа сверху.
+        smokeMaze2D = new SFUnifiedSmokeMaze2DPreset
+        {
+            vol_size = new[] { 5, 1, 3 },
+            vol_res = new[] { 128, 32, 96 },
+            hbar = 0.05f,
+            dt = 1f / 24f,
+            wallThickness = 0.12f,
+            wallMargin = 0.1f,
+            wall1X = 1.0f,
+            wall1GapZ = new Vector2(1.0f, 2.0f),
+            wall2X = 2.5f,
+            wall2SolidZ = new Vector2(0.7f, 2.3f),
+            wall3X = 3.8f,
+            wall3SolidMaxZ = 2.0f,
+            sourceCenter = new Vector3(0.25f, 0.5f, 1.5f),
+            sourceHalf = new Vector3(0.12f, 0.45f, 0.45f),
+            emitVelocity = new Vector3(0.18f, 0f, 0.1f),
+            ventCenter = new Vector3(4.75f, 0.5f, 2.35f),
+            ventHalf = new Vector3(0.12f, 0.45f, 0.35f),
+            ventSuction = new Vector3(0.7f, 0f, 0.3f),
+            particleDispersion = 0.32f,
+            dispersionWallBoost = 2.5f,
+            ventDrift = 0.14f,
+            wallDeflect = 0.55f,
+            pushSearchCells = 36,
+            kinematicViscosity = 0.0004f,
+            nParticles = 60,
+            particleSize = 0.06f,
+            stepsPerFrame = 2,
+            useLES = true
+        };
     }
 
     public void ApplyTo(SFUnifiedCS target)
@@ -173,6 +209,9 @@ public class SFUnifiedScenarioPresets : ScriptableObject
                 break;
             case SFUnifiedCS.ScenarioType.ObliqueRingCollision:
                 target.ApplyObliqueRingCollisionHipDefaults();
+                break;
+            case SFUnifiedCS.ScenarioType.SmokeMaze2D:
+                target.ApplySmokeMaze2DPreset(smokeMaze2D);
                 break;
         }
     }

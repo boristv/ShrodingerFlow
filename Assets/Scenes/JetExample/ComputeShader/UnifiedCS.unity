@@ -158,17 +158,17 @@ MonoBehaviour:
   _particlesShader: {fileID: 7200000, guid: 2894e3a1b59434c4f8a90079f8036355, type: 3}
   _lesShader: {fileID: 7200000, guid: de57605fec55e4a0096a1b3240cc595b, type: 3}
   _scenarioPresetsOverride: {fileID: 0}
-  _scenario: 0
-  vol_size: 040000000200000002000000
-  vol_res: 800000004000000040000000
-  hbar: 0.02
-  dt: 0.020833334
+  _scenario: 8
+  vol_size: 050000000100000003000000
+  vol_res: 800000002000000060000000
+  hbar: 0.05
+  dt: 0.041666668
   _velocity: {x: 1, y: 0, z: 0}
-  _nozzleCen: {x: 0.3, y: 0.9656632, z: 1.0659939}
+  _nozzleCen: {x: 0.3, y: 0.966, z: 1.066}
   _nozzleLen: 0.5
-  _nozzleRad: 0.3
-  _obstaclePos1: {x: 1, y: 2, z: 2}
-  _obstacleRadius1: 0.45
+  _nozzleRad: 0.4
+  _obstaclePos1: {x: 1.5, y: 1, z: 1}
+  _obstacleRadius1: 0.5
   _obstaclePos2: {x: 3, y: 2, z: 2}
   _obstacleRadius2: 0.45
   _ring1Radius: 1.5
@@ -181,21 +181,41 @@ MonoBehaviour:
   _obliqueRing2Normal: {x: 0, y: 0, z: 1}
   _obliqueRingRadius: 0.6
   _obliquePsi2Re: 0.05
+  _mazeWallThickness: 0.12
+  _mazeWallMargin: 0.1
+  _mazeWall1X: 1
+  _mazeWall1GapZ: {x: 1, y: 2}
+  _mazeWall2X: 2.5
+  _mazeWall2SolidZ: {x: 0.7, y: 2.3}
+  _mazeWall3X: 3.8
+  _mazeWall3SolidMaxZ: 2
+  _mazeSourceCenter: {x: 0.25, y: 0.5, z: 1.5}
+  _mazeSourceHalf: {x: 0.12, y: 0.45, z: 0.45}
+  _mazeEmitVelocity: {x: 0.18, y: 0, z: 0.1}
+  _mazeVentCenter: {x: 4.75, y: 0.5, z: 2.35}
+  _mazeVentHalf: {x: 0.12, y: 0.45, z: 0.35}
+  _mazeVentSuction: {x: 0.7, y: 0, z: 0.3}
+  _mazeParticleDispersion: 0.32
+  _mazeDispersionWallBoost: 2.5
+  _mazeVentDrift: 0.14
+  _mazeWallDeflect: 0.55
+  _mazePushSearchCells: 36
   _cigaretteBackgroundU: {x: 0.1, y: 0, z: 0}
   _cigaretteJet: {x: 0, y: 1, z: 0}
   _cigaretteGravity: {x: 0, y: 1, z: 0}
   _cigaretteHeatSphereCen: {x: 1, y: 0.5, z: 1.6127148}
   _cigaretteHeatSphereRad: 0.2
-  _nParticles: 50
-  _particleSize: 0.05
-  _boxSpawnX: {x: 0.5, y: 4.5}
-  _boxSpawnY: {x: 0.5, y: 4.5}
-  _boxSpawnZ: {x: 0.5, y: 4.5}
+  _nParticles: 60
+  _particleSize: 0.06
+  _boxSpawnX: {x: 3, y: 3}
+  _boxSpawnY: {x: 0.1, y: 1.9}
+  _boxSpawnZ: {x: 0.5, y: 1.9}
   _applyPsi2Gravity: 0
   _psi2Gravity: {x: 0, y: 1, z: 0}
-  _useLES: 0
+  _useLES: 1
+  _kinematicViscosity: 0.0004
   _paused: 0
-  _stepsPerFrame: 1
+  _stepsPerFrame: 2
 --- !u!4 &362555268
 Transform:
   m_ObjectHideFlags: 0

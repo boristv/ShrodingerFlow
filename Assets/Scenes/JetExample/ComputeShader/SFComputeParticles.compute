@@ -2,6 +2,12 @@
 #pragma kernel InterpolateVelocity
 #pragma kernel RK4Update
 #pragma kernel WrapPositions
+#pragma kernel ClampPositionsToVolume
+#pragma kernel PushParticlesOutOfSolidMask
+#pragma kernel DisperseMazeParticles
+#pragma kernel DriftMazeSourceParticles
+#pragma kernel DriftMazeTowardVent
+#pragma kernel DeflectMazeAtWallParticles
 
 RWStructuredBuffer<float> _PosX;
 RWStructuredBuffer<float> _PosY;
@@ -47,6 +53,63 @@ int   _TorResZ;
 float _TorDX;
 float _TorDY;
 float _TorDZ;
+// 1 — clamp индексы сетки (непериодичный домен); 0 — toroidal wrap (Jet, кольца).
+int   _ClampSampling;
+
+float _VolSizeX;
+float _VolSizeY;
+float _VolSizeZ;
+
+StructuredBuffer<int> _SolidMask;
+int _PushSearchCells;
+float3 _VentTarget;
+float _VentBiasWeight;
+
+float _DisperseSigma;
+float _DisperseWallBoost;
+int _DisperseSeed;
+
+float3 _SourceCenter;
+float3 _SourceHalf;
+float3 _SourceDriftV;
+float _SourceDriftDT;
+
+float3 _VentDriftTarget;
+float _VentDriftStrength;
+float _VentDriftDT;
+
+float _DeflectStep;
+int _DeflectSearchCells;
+
+int CellIdxClamped(int raw, int res)
+{
+    return clamp(raw, 0, res - 1);
+}
+
+int CellIdxWrapped(int raw, int res)
+{
+    return ((raw % res) + res) % res;
+}
+
+int CellIdx(int raw, int res)
+{
+    return (_ClampSampling != 0) ? CellIdxClamped(raw, res) : CellIdxWrapped(raw, res);
+}
+
+int CellIdxPlus(int ix, int res)
+{
+    return (_ClampSampling != 0) ? min(ix + 1, res - 1) : ((ix + 1) % res);
+}
+
+int SolidAt(int ix, int iy, int iz)
+{
+    ix = clamp(ix, 0, _TorResX - 1);
+    iy = clamp(iy, 0, _TorResY - 1);
+    iz = clamp(iz, 0, _TorResZ - 1);
+    int r2 = _TorResZ;
+    int r21 = _TorResY * _TorResZ;
+    return _SolidMask[ix * r21 + iy * r2 + iz];
+}
 
 [numthreads(256, 1, 1)]
 void AddParticles(uint3 id : SV_DispatchThreadID)
@@ -69,22 +132,22 @@ void InterpolateVelocity(uint3 id : SV_DispatchThreadID)
     float cell_x = (_PosX[i] + sh_x) / _TorDX;
     int ix_raw = (int)floor(cell_x);
     float wx = cell_x - (float)ix_raw;
-    int ix  = ((ix_raw % _TorResX) + _TorResX) % _TorResX;
-    int ixp = (ix + 1) % _TorResX;
+    int ix  = CellIdx(ix_raw, _TorResX);
+    int ixp = CellIdxPlus(ix, _TorResX);
 
     float sh_y = _ShiftY[i] * _ShiftFactor;
     float cell_y = (_PosY[i] + sh_y) / _TorDY;
     int iy_raw = (int)floor(cell_y);
     float wy = cell_y - (float)iy_raw;
-    int iy  = ((iy_raw % _TorResY) + _TorResY) % _TorResY;
-    int iyp = (iy + 1) % _TorResY;
+    int iy  = CellIdx(iy_raw, _TorResY);
+    int iyp = CellIdxPlus(iy, _TorResY);
 
     float sh_z = _ShiftZ[i] * _ShiftFactor;
     float cell_z = (_PosZ[i] + sh_z) / _TorDZ;
     int iz_raw = (int)floor(cell_z);
     float wz = cell_z - (float)iz_raw;
-    int iz  = ((iz_raw % _TorResZ) + _TorResZ) % _TorResZ;
-    int izp = (iz + 1) % _TorResZ;
+    int iz  = CellIdx(iz_raw, _TorResZ);
+    int izp = CellIdxPlus(iz, _TorResZ);
 
     int r2 = _TorResZ;
     int r21 = _TorResZ * _TorResY;
@@ -116,9 +179,179 @@ void RK4Update(uint3 id : SV_DispatchThreadID)
     _PosZ[i] += (_K1Z[i] + 2.0 * _K2Z[i] + 2.0 * _K3Z[i] + _K4Z[i]) * _DT / 6.0;
 }
 
-float _VolSizeX;
-float _VolSizeY;
-float _VolSizeZ;
+[numthreads(256, 1, 1)]
+void ClampPositionsToVolume(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+    _PosX[i] = clamp(_PosX[i], 0.0, _VolSizeX);
+    _PosY[i] = clamp(_PosY[i], 0.0, _VolSizeY);
+    _PosZ[i] = clamp(_PosZ[i], 0.0, _VolSizeZ);
+}
+
+// Выталкивает трассеры из ячеек маски стен (_SolidMask==1) к ближайшей свободной ячейке.
+[numthreads(256, 1, 1)]
+void PushParticlesOutOfSolidMask(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+
+    float px = _PosX[i], py = _PosY[i], pz = _PosZ[i];
+    int ix = clamp((int)floor(px / _TorDX), 0, _TorResX - 1);
+    int iy = clamp((int)floor(py / _TorDY), 0, _TorResY - 1);
+    int iz = clamp((int)floor(pz / _TorDZ), 0, _TorResZ - 1);
+    if (SolidAt(ix, iy, iz) == 0) return;
+
+    float bestScore = -1e20;
+    float3 bestPos = float3(px, py, pz);
+    float3 ventHint = float3(_VentTarget.x - px, 0.0, _VentTarget.z - pz);
+    float ventLen = length(ventHint);
+    float3 ventDir = ventLen > 1e-5 ? ventHint / ventLen : float3(1.0, 0.0, 0.0);
+
+    for (int r = 1; r <= _PushSearchCells; r++)
+    {
+        for (int dz = -r; dz <= r; dz++)
+        for (int dy = -r; dy <= r; dy++)
+        for (int dx = -r; dx <= r; dx++)
+        {
+            if (abs(dx) != r && abs(dy) != r && abs(dz) != r) continue;
+            if (SolidAt(ix + dx, iy + dy, iz + dz) != 0) continue;
+            float wx = ((float)(ix + dx) + 0.5) * _TorDX;
+            float wy = ((float)(iy + dy) + 0.5) * _TorDY;
+            float wz = ((float)(iz + dz) + 0.5) * _TorDZ;
+            float3 cand = float3(wx, wy, wz);
+            float3 delta = cand - float3(px, py, pz);
+            float d = length(delta);
+            float3 dir = d > 1e-6 ? delta / d : float3(0, 0, 0);
+            // К vent, вперёд (+X) и вбок (±Z) — чтобы выходить в проёмы, а не залипать в стену.
+            float score = -d + _VentBiasWeight * dot(dir, ventDir) + 0.35 * abs(dir.z) + 0.2 * max(dir.x, 0.0);
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestPos = cand;
+            }
+        }
+        if (bestScore > -1e19) break;
+    }
+    _PosX[i] = bestPos.x;
+    _PosY[i] = bestPos.y;
+    _PosZ[i] = bestPos.z;
+}
+
+float MazeHash01(uint n)
+{
+    n = (n ^ 61u) ^ (n >> 16);
+    n *= 9u;
+    n = n ^ (n >> 4);
+    n *= 0x27d4eb2du;
+    n = n ^ (n >> 15);
+    return (float)(n & 0x00ffffffu) / (float)0x01000000u;
+}
+
+// Турбулентная дисперсия в XZ + усиление у стен; curl-компонента для «закручивания».
+[numthreads(256, 1, 1)]
+void DisperseMazeParticles(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+
+    float px = _PosX[i], py = _PosY[i], pz = _PosZ[i];
+    int ix = clamp((int)floor(px / _TorDX), 0, _TorResX - 1);
+    int iy = clamp((int)floor(py / _TorDY), 0, _TorResY - 1);
+    int iz = clamp((int)floor(pz / _TorDZ), 0, _TorResZ - 1);
+
+    float wallProx = 0.0;
+    for (int dz = -1; dz <= 1; dz++)
+    for (int dy = -1; dy <= 1; dy++)
+    for (int dx = -1; dx <= 1; dx++)
+        wallProx = max(wallProx, (float)SolidAt(ix + dx, iy + dy, iz + dz));
+    float sigma = _DisperseSigma * (1.0 + _DisperseWallBoost * wallProx);
+
+    uint seed = (uint)i * 2654435761u + (uint)_DisperseSeed * 40503u;
+    float rx = MazeHash01(seed + 1u) * 2.0 - 1.0;
+    float rz = MazeHash01(seed + 7u) * 2.0 - 1.0;
+    float ry2 = MazeHash01(seed + 13u) * 2.0 - 1.0;
+    // Псевдо-vortex: смешиваем случайный вектор с поворотом на 90°.
+    float2 v = float2(rx, rz);
+    float2 curl = float2(v.y, -v.x);
+    float2 d = normalize(v + 0.65 * curl + 1e-4) * sigma * (0.7 + 0.3 * abs(ry2));
+    _PosX[i] += d.x;
+    _PosZ[i] += d.y;
+}
+
+// Дрейф трассеров в зоне источника: гарантирует выход дыма, даже если поле u у ψ слабое.
+[numthreads(256, 1, 1)]
+void DriftMazeSourceParticles(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+
+    float px = _PosX[i], py = _PosY[i], pz = _PosZ[i];
+    if (px < _SourceCenter.x - _SourceHalf.x || px > _SourceCenter.x + _SourceHalf.x
+        || py < _SourceCenter.y - _SourceHalf.y || py > _SourceCenter.y + _SourceHalf.y
+        || pz < _SourceCenter.z - _SourceHalf.z || pz > _SourceCenter.z + _SourceHalf.z)
+        return;
+
+    _PosX[i] = px + _SourceDriftV.x * _SourceDriftDT;
+    _PosY[i] = py + _SourceDriftV.y * _SourceDriftDT;
+    _PosZ[i] = pz + _SourceDriftV.z * _SourceDriftDT;
+}
+
+// Слабый дрейф всех трассеров к вытяжке — тянет дым через лабиринт.
+[numthreads(256, 1, 1)]
+void DriftMazeTowardVent(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+
+    float px = _PosX[i], py = _PosY[i], pz = _PosZ[i];
+    float3 toVent = _VentDriftTarget - float3(px, py, pz);
+    toVent.y = 0.0;
+    float len = length(toVent);
+    if (len < 1e-5) return;
+    float3 dir = toVent / len;
+    _PosX[i] = px + dir.x * _VentDriftStrength * _VentDriftDT;
+    _PosZ[i] = pz + dir.z * _VentDriftStrength * _VentDriftDT;
+}
+
+// Перед стеной (+X занят): ищем открытый проём вверх/вниз и сдвигаем трассер к нему.
+[numthreads(256, 1, 1)]
+void DeflectMazeAtWallParticles(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+
+    float px = _PosX[i], py = _PosY[i], pz = _PosZ[i];
+    int ix = clamp((int)floor(px / _TorDX), 0, _TorResX - 1);
+    int iy = clamp((int)floor(py / _TorDY), 0, _TorResY - 1);
+    int iz = clamp((int)floor(pz / _TorDZ), 0, _TorResZ - 1);
+    if (SolidAt(ix, iy, iz) != 0) return;
+
+    bool blockedAhead = (ix < _TorResX - 1) && (SolidAt(ix + 1, iy, iz) != 0);
+    if (!blockedAhead) return;
+
+    int bestDz = 0;
+    float bestScore = -1e20;
+    for (int dz = -_DeflectSearchCells; dz <= _DeflectSearchCells; dz++)
+    {
+        if (dz == 0) continue;
+        int jz = iz + dz;
+        if (jz < 0 || jz >= _TorResZ) continue;
+        if (SolidAt(ix, iy, jz) != 0) continue;
+        if (ix < _TorResX - 1 && SolidAt(ix + 1, iy, jz) != 0) continue;
+        float score = -(float)abs(dz);
+        if (jz > iz) score += 0.15;
+        if (score > bestScore)
+        {
+            bestScore = score;
+            bestDz = dz;
+        }
+    }
+    if (bestDz == 0) return;
+
+    float step = sign((float)bestDz) * min(_DeflectStep, abs((float)bestDz) * _TorDZ * 0.42);
+    _PosZ[i] = pz + step;
+}
 
 [numthreads(256, 1, 1)]
 void WrapPositions(uint3 id : SV_DispatchThreadID)

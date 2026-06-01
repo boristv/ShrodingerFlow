@@ -22,7 +22,9 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         /// <summary>example_ink_collision.hip / карточка Ink drop: два шара ±1, скорости ∓1 по X, границы ψ на каждом шаге.</summary>
         InkCollision,
         /// <summary>Вид сверху (XZ): кольцо слева, нормаль +X; кольцо с большой Z, нормаль −Z; плоскости перпендикулярны, встреча в центре объёма.</summary>
-        ObliqueRingCollision
+        ObliqueRingCollision,
+        /// <summary>2D-лабиринт (вид сверху XZ): источник слева, перегородки с разными проходами, вытяжка справа сверху.</summary>
+        SmokeMaze2D
     }
 
     [Header("Compute Shaders")]
@@ -76,6 +78,41 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     [SerializeField] private float _obliqueRingRadius = 0.6f;
     [SerializeField] private float _obliquePsi2Re = 0.05f;
 
+    [Header("Smoke Maze 2D — лабиринт (вид сверху XZ)")]
+    [Tooltip("Толщина перегородок и внешних стен.")]
+    [SerializeField] private float _mazeWallThickness = 0.12f;
+    [Tooltip("Отступ внешних стен от границы домена.")]
+    [SerializeField] private float _mazeWallMargin = 0.1f;
+    [Tooltip("Перегородка 1: X; проём по Z между gapZ.x и gapZ.y (середина открыта).")]
+    [SerializeField] private float _mazeWall1X = 1.0f;
+    [SerializeField] private Vector2 _mazeWall1GapZ = new Vector2(1.0f, 2.0f);
+    [Tooltip("Перегородка 2: X; сплошная по Z между solidZ.x и solidZ.y (верх/низ открыты).")]
+    [SerializeField] private float _mazeWall2X = 2.5f;
+    [SerializeField] private Vector2 _mazeWall2SolidZ = new Vector2(0.7f, 2.3f);
+    [Tooltip("Перегородка 3: X; сплошная снизу до solidMaxZ (верх открыт).")]
+    [SerializeField] private float _mazeWall3X = 3.8f;
+    [SerializeField] private float _mazeWall3SolidMaxZ = 2.0f;
+    [Tooltip("Источник дыма (оранжевый на схеме): центр и полуразмер AABB.")]
+    [SerializeField] private Vector3 _mazeSourceCenter = new Vector3(0.25f, 0.5f, 1.5f);
+    [SerializeField] private Vector3 _mazeSourceHalf = new Vector3(0.12f, 0.45f, 0.25f);
+    [Tooltip("Скорость выброса из источника: умеренный → +X, слабый → +Z для поиска проходов. Не 0 — иначе дым «застывает» у источника.")]
+    [SerializeField] private Vector3 _mazeEmitVelocity = new Vector3(0.18f, 0f, 0.1f);
+    [Tooltip("Вытяжка (зелёная): центр и полуразмер AABB.")]
+    [SerializeField] private Vector3 _mazeVentCenter = new Vector3(4.75f, 0.5f, 2.35f);
+    [SerializeField] private Vector3 _mazeVentHalf = new Vector3(0.12f, 0.45f, 0.35f);
+    [Tooltip("Подсос вытяжки: втягивает воздух/дым к vent (основной драйвер потока в лабиринте).")]
+    [SerializeField] private Vector3 _mazeVentSuction = new Vector3(0.7f, 0f, 0.3f);
+    [Tooltip("Турбулентная дисперсия трассеров в плоскости XZ (доли ячейки): рассеивание для поиска смещённых проходов.")]
+    [SerializeField, Range(0f, 1f)] private float _mazeParticleDispersion = 0.32f;
+    [Tooltip("Усиление дисперсии у стен (×) — помогает огибать препятствия.")]
+    [SerializeField, Range(0f, 5f)] private float _mazeDispersionWallBoost = 2.5f;
+    [Tooltip("Слабый дрейф всех трассеров к вытяжке (м/с).")]
+    [SerializeField] private float _mazeVentDrift = 0.14f;
+    [Tooltip("Шаг обхода стены вверх/вниз к проёму (доли ячейки).")]
+    [SerializeField, Range(0f, 2f)] private float _mazeWallDeflect = 0.55f;
+    [Tooltip("Радиус поиска свободной ячейки при столкновении (в ячейках сетки; для проходов нужно ≥30).")]
+    [SerializeField, Range(4, 48)] private int _mazePushSearchCells = 36;
+
     [Header("Cigarette — example_cigarette.hip")]
     [Tooltip("Фоновый поток U для начальной плоской волны (k = U/hbar).")]
     [SerializeField] private Vector3 _cigaretteBackgroundU = new Vector3(0.1f, 0f, 0f);
@@ -113,6 +150,8 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     private CSParticles _particles;
     private CSVelocity _vel;
     private ComputeBuffer _maskBuf1, _maskBuf2;
+    private ComputeBuffer _mazeWallMaskBuf, _mazeSourceMaskBuf, _mazeVentMaskBuf;
+    private Vector3 _mazeVentMin, _mazeVentMax;
 
     private ParticleGpuBuffers _particleBuffers;
     private ParticleDisplay3D _particleDisplay;
@@ -215,7 +254,8 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
             }
 
             if (_spawnEachStep
-                && (_scenario == ScenarioType.Jet || _scenario == ScenarioType.Cigarette))
+                && (_scenario == ScenarioType.Jet || _scenario == ScenarioType.Cigarette
+                    || _scenario == ScenarioType.SmokeMaze2D))
             {
                 _compactCounter++;
                 if (_compactCounter >= 60)
@@ -235,6 +275,9 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     {
         _maskBuf1?.Release();
         _maskBuf2?.Release();
+        _mazeWallMaskBuf?.Release();
+        _mazeSourceMaskBuf?.Release();
+        _mazeVentMaskBuf?.Release();
         _vel?.Dispose();
         _particles?.Dispose();
         _isf?.Dispose();
@@ -331,6 +374,18 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                 SpawnParticlesInSpheres();
                 _spawnEachStep = false;
                 _boundaryEachStep = true;
+                break;
+
+            case ScenarioType.SmokeMaze2D:
+                InitPsiPlaneWave(new Vector3(0.06f, 0f, 0f));
+                _mazeWallMaskBuf = BuildMazeWallMask();
+                _mazeSourceMaskBuf = BuildBoxMask(_mazeSourceCenter, _mazeSourceHalf);
+                _mazeVentMaskBuf = BuildBoxMask(_mazeVentCenter, _mazeVentHalf);
+                _mazeVentMin = _mazeVentCenter - _mazeVentHalf;
+                _mazeVentMax = _mazeVentCenter + _mazeVentHalf;
+                RunInitBoundary(_mazeWallMaskBuf, 0f, 0f, 0f, 0f, 10);
+                _spawnEachStep = true;
+                _boundaryEachStep = false;
                 break;
         }
     }
@@ -523,6 +578,83 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         return buf;
     }
 
+    private static bool IsInsideAabb(float px, float py, float pz, Vector3 center, Vector3 half)
+    {
+        return px >= center.x - half.x && px <= center.x + half.x
+            && py >= center.y - half.y && py <= center.y + half.y
+            && pz >= center.z - half.z && pz <= center.z + half.z;
+    }
+
+    private ComputeBuffer BuildBoxMask(Vector3 center, Vector3 half)
+    {
+        int num = _isf.num;
+        var mask = new int[num];
+        for (int i = 0; i < num; i++)
+            mask[i] = IsInsideAabb(_isf.pxCPU[i], _isf.pyCPU[i], _isf.pzCPU[i], center, half) ? 1 : 0;
+        var buf = new ComputeBuffer(num, sizeof(int));
+        buf.SetData(mask);
+        return buf;
+    }
+
+    private bool IsMazeOuterWall(float px, float pz)
+    {
+        float m = _mazeWallMargin;
+        float wx = vol_size[0], wz = vol_size[2];
+        return px < m || px > wx - m || pz < m || pz > wz - m;
+    }
+
+    private bool IsMazeSlatSolid(float px, float pz)
+    {
+        float t = _mazeWallThickness * 0.5f;
+
+        if (Mathf.Abs(px - _mazeWall1X) <= t)
+            return pz < _mazeWall1GapZ.x || pz > _mazeWall1GapZ.y;
+
+        if (Mathf.Abs(px - _mazeWall2X) <= t)
+            return pz >= _mazeWall2SolidZ.x && pz <= _mazeWall2SolidZ.y;
+
+        if (Mathf.Abs(px - _mazeWall3X) <= t)
+            return pz < _mazeWall3SolidMaxZ;
+
+        return false;
+    }
+
+    /// <summary>Внешние стены + 3 перегородки с разными проходами; без источника и вытяжки.</summary>
+    private ComputeBuffer BuildMazeWallMask()
+    {
+        int num = _isf.num;
+        var mask = new int[num];
+        float hx = _isf.dx * 0.5f;
+        float hz = _isf.dz * 0.5f;
+        for (int i = 0; i < num; i++)
+        {
+            float px = _isf.pxCPU[i], py = _isf.pyCPU[i], pz = _isf.pzCPU[i];
+            if (IsInsideAabb(px, py, pz, _mazeSourceCenter, _mazeSourceHalf)
+                || IsInsideAabb(px, py, pz, _mazeVentCenter, _mazeVentHalf))
+            {
+                mask[i] = 0;
+                continue;
+            }
+            // Углы ячейки по XZ — чтобы тонкие стены не «пропускали» поток между центрами соседей.
+            bool solid = IsMazeSolidAt(px, py, pz)
+                || IsMazeSolidAt(px - hx, py, pz - hz)
+                || IsMazeSolidAt(px + hx, py, pz - hz)
+                || IsMazeSolidAt(px - hx, py, pz + hz)
+                || IsMazeSolidAt(px + hx, py, pz + hz);
+            mask[i] = solid ? 1 : 0;
+        }
+        var buf = new ComputeBuffer(num, sizeof(int));
+        buf.SetData(mask);
+        return buf;
+    }
+
+    private bool IsMazeSolidAt(float px, float py, float pz)
+    {
+        if (IsInsideAabb(px, py, pz, _mazeSourceCenter, _mazeSourceHalf)) return false;
+        if (IsInsideAabb(px, py, pz, _mazeVentCenter, _mazeVentHalf)) return false;
+        return IsMazeOuterWall(px, pz) || IsMazeSlatSolid(px, pz);
+    }
+
     private void ComputeKvecAndOmega(Vector3 vel)
     {
         _kvecX = vel.x / hbar;
@@ -561,6 +693,12 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
 
     private void SimulationStep()
     {
+        if (_scenario == ScenarioType.SmokeMaze2D)
+        {
+            SimulationStepSmokeMaze();
+            return;
+        }
+
         _isf.kinematicViscosity = _kinematicViscosity;
         if (_scenario == ScenarioType.Cigarette)
             _isf.UpdateCigaretteSpace(_useLES, _cigaretteGravity, _maskBuf1);
@@ -597,6 +735,83 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         if (_scenario != ScenarioType.Jet && _scenario != ScenarioType.Cigarette
             && _scenario != ScenarioType.ObliqueRingCollision)
             _particles.WrapPositions(vol_size[0], vol_size[1], vol_size[2]);
+    }
+
+    private void SimulationStepSmokeMaze()
+    {
+        _isf.kinematicViscosity = _kinematicViscosity;
+        _isf.UpdateSpace(_useLES, null);
+
+        float invH = 1f / hbar;
+        _isf.ApplyJetBoundary(_mazeWallMaskBuf, 0f, 0f, 0f, 0f);
+        _isf.PressureProject();
+        _isf.ApplyJetBoundary(_mazeWallMaskBuf, 0f, 0f, 0f, 0f);
+        _isf.ApplyJetBoundary(_mazeSourceMaskBuf,
+            _mazeEmitVelocity.x * invH, _mazeEmitVelocity.y * invH, _mazeEmitVelocity.z * invH, 0f);
+        _isf.ApplyJetBoundary(_mazeVentMaskBuf,
+            _mazeVentSuction.x * invH, _mazeVentSuction.y * invH, _mazeVentSuction.z * invH, 0f);
+        _isf.PressureProject();
+
+        SpawnMazeSourceParticles();
+        _isf.UpdateVelocities(_vel);
+        _particles.CalculateMovement(_vel, clampSampling: true);
+        _particles.DriftInSourceBox(_mazeSourceCenter, _mazeSourceHalf, _mazeEmitVelocity, dt);
+        _particles.DriftTowardVent(_mazeVentCenter, _mazeVentDrift, dt);
+        float mcell = Mathf.Min(_isf.dx, _isf.dz);
+        if (_mazeParticleDispersion > 1e-4f)
+        {
+            _particles.DisperseMaze(_mazeWallMaskBuf,
+                _mazeParticleDispersion * mcell, _mazeDispersionWallBoost, iterator);
+        }
+        if (_mazeWallDeflect > 1e-4f)
+        {
+            _particles.DeflectAtWall(_mazeWallMaskBuf,
+                _mazeWallDeflect * mcell, _mazePushSearchCells);
+        }
+        for (int pass = 0; pass < 2; pass++)
+        {
+            _particles.PushOutOfSolidMask(_mazeWallMaskBuf, _mazePushSearchCells,
+                _mazeVentCenter, 0.45f);
+        }
+        _particles.ClampPositionsToVolume(vol_size[0], vol_size[1], vol_size[2]);
+        CompactMazeParticles();
+    }
+
+    private void SpawnMazeSourceParticles()
+    {
+        var xx = new float[_nParticles];
+        var yy = new float[_nParticles];
+        var zz = new float[_nParticles];
+        for (int i = 0; i < _nParticles; i++)
+        {
+            xx[i] = Random.Range(_mazeSourceCenter.x - _mazeSourceHalf.x, _mazeSourceCenter.x + _mazeSourceHalf.x);
+            yy[i] = Random.Range(_mazeSourceCenter.y - _mazeSourceHalf.y, _mazeSourceCenter.y + _mazeSourceHalf.y);
+            zz[i] = Random.Range(_mazeSourceCenter.z - _mazeSourceHalf.z, _mazeSourceCenter.z + _mazeSourceHalf.z);
+        }
+        _particles.AddParticles(xx, yy, zz, _nParticles, true);
+        _particlesCount = _particles.Size;
+    }
+
+    /// <summary>Удалить частицы вне домена и в зоне вытяжки (имитация удаления дыма).</summary>
+    private void CompactMazeParticles()
+    {
+        if (_particlesCount == 0) return;
+
+        _particles.ReadPositions(_pxArr, _pyArr, _pzArr);
+        for (int i = 0; i < _particlesCount; i++)
+        {
+            float px = _pxArr[i], py = _pyArr[i], pz = _pzArr[i];
+            if (px >= _mazeVentMin.x && px <= _mazeVentMax.x
+                && py >= _mazeVentMin.y && py <= _mazeVentMax.y
+                && pz >= _mazeVentMin.z && pz <= _mazeVentMax.z)
+            {
+                _pxArr[i] = _pyArr[i] = _pzArr[i] = -1f;
+            }
+        }
+        _particles.WritePositions(_pxArr, _pyArr, _pzArr, _particlesCount);
+        _particles.CompactParticles(_pxArr, _pyArr, _pzArr,
+            vol_size[0], vol_size[1], vol_size[2], _prevPos, _displayVelSmooth);
+        _particlesCount = _particles.Size;
     }
 
     #endregion
@@ -755,7 +970,8 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         var offset = transform.position;
 
         bool cull = _scenario == ScenarioType.Jet || _scenario == ScenarioType.Cigarette
-            || _scenario == ScenarioType.ObliqueRingCollision;
+            || _scenario == ScenarioType.ObliqueRingCollision
+            || _scenario == ScenarioType.SmokeMaze2D;
         float maxX = vol_size[0], maxY = vol_size[1], maxZ = vol_size[2];
         float velThreshold = maxX * maxX + maxY * maxY + maxZ * maxZ;
         int visible = 0;
@@ -981,6 +1197,47 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         SyncParticleDisplayScaleFromSimulation();
     }
 
+    public void ApplySmokeMaze2DPreset(SFUnifiedSmokeMaze2DPreset p)
+    {
+        vol_size = (int[])p.vol_size?.Clone() ?? new[] { 5, 1, 3 };
+        vol_res = (int[])p.vol_res?.Clone() ?? new[] { 128, 32, 96 };
+        hbar = p.hbar;
+        dt = p.dt;
+        _mazeWallThickness = p.wallThickness;
+        _mazeWallMargin = p.wallMargin;
+        _mazeWall1X = p.wall1X;
+        _mazeWall1GapZ = p.wall1GapZ;
+        _mazeWall2X = p.wall2X;
+        _mazeWall2SolidZ = p.wall2SolidZ;
+        _mazeWall3X = p.wall3X;
+        _mazeWall3SolidMaxZ = p.wall3SolidMaxZ;
+        _mazeSourceCenter = p.sourceCenter;
+        _mazeSourceHalf = p.sourceHalf;
+        _mazeEmitVelocity = p.emitVelocity;
+        _mazeVentCenter = p.ventCenter;
+        _mazeVentHalf = p.ventHalf;
+        _mazeVentSuction = p.ventSuction;
+        _mazeParticleDispersion = p.particleDispersion;
+        _mazeDispersionWallBoost = p.dispersionWallBoost;
+        _mazeVentDrift = p.ventDrift;
+        _mazeWallDeflect = p.wallDeflect;
+        _mazePushSearchCells = p.pushSearchCells;
+        _kinematicViscosity = p.kinematicViscosity;
+        _nParticles = p.nParticles;
+        _particleSize = p.particleSize;
+        SyncParticleDisplayScaleFromSimulation();
+        _stepsPerFrame = p.stepsPerFrame;
+        _useLES = p.useLES;
+    }
+
+    [ContextMenu("Apply Smoke Maze 2D defaults")]
+    public void ApplySmokeMaze2DDefaults()
+    {
+        _scenario = ScenarioType.SmokeMaze2D;
+        ApplySmokeMaze2DPreset(ResolveScenarioPresets().smokeMaze2D);
+        Debug.Log("[SFUnifiedCS] SmokeMaze2D defaults applied.");
+    }
+
     #endregion
 
     #region Gizmos
@@ -1025,7 +1282,46 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                 Gizmos.DrawWireSphere(transform.position + _cigaretteHeatSphereCen,
                     _cigaretteHeatSphereRad);
                 break;
+            case ScenarioType.SmokeMaze2D:
+                DrawSmokeMazeGizmos();
+                break;
         }
+    }
+
+    private void DrawSmokeMazeGizmos()
+    {
+        var o = transform.position;
+        float wy = vol_size[1];
+        float t = _mazeWallThickness;
+
+        Gizmos.color = new Color(1f, 0.55f, 0.1f, 0.85f);
+        Gizmos.DrawWireCube(o + _mazeSourceCenter, _mazeSourceHalf * 2f);
+
+        Gizmos.color = new Color(0.2f, 0.85f, 0.35f, 0.85f);
+        Gizmos.DrawWireCube(o + _mazeVentCenter, _mazeVentHalf * 2f);
+
+        Gizmos.color = new Color(0.25f, 0.45f, 1f, 0.75f);
+        DrawMazeSlatSegment(_mazeWall1X, 0f, _mazeWall1GapZ.x, wy, t);
+        DrawMazeSlatSegment(_mazeWall1X, _mazeWall1GapZ.y, vol_size[2], wy, t);
+        DrawMazeSlatSegment(_mazeWall2X, _mazeWall2SolidZ.x, _mazeWall2SolidZ.y, wy, t);
+        DrawMazeSlatSegment(_mazeWall3X, 0f, _mazeWall3SolidMaxZ, wy, t);
+
+        float m = _mazeWallMargin;
+        float wx = vol_size[0], wz = vol_size[2];
+        DrawMazeSlatSegment(m, 0f, wz, wy, m);
+        DrawMazeSlatSegment(wx - m, 0f, wz, wy, m);
+        Gizmos.DrawWireCube(o + new Vector3(wx * 0.5f, wy * 0.5f, m * 0.5f), new Vector3(wx, wy, m));
+        Gizmos.DrawWireCube(o + new Vector3(wx * 0.5f, wy * 0.5f, wz - m * 0.5f), new Vector3(wx, wy, m));
+    }
+
+    private void DrawMazeSlatSegment(float centerX, float z0, float z1, float heightY, float thicknessX)
+    {
+        if (z1 <= z0) return;
+        var o = transform.position;
+        float cz = (z0 + z1) * 0.5f;
+        var center = new Vector3(centerX, heightY * 0.5f, cz);
+        var size = new Vector3(thicknessX, heightY, z1 - z0);
+        Gizmos.DrawWireCube(o + center, size);
     }
 
     #endregion
