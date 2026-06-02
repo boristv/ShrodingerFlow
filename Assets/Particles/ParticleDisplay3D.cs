@@ -54,10 +54,12 @@ namespace ShrodingerFlow.Particles
         public ComputeShader psiDensityToVolume;
         [Tooltip("ParticlesToDensityVolume — сплаты частиц в объём (режим «Частицы»).")]
         public ComputeShader particlesToDensityVolume;
-        [SerializeField, Tooltip("Радиус сплата в ячейках сетки (режим «Частицы»).")]
-        float _splatterSigmaCells = 1.35f;
+        [SerializeField, Tooltip("Радиус капли частицы в МИРОВЫХ единицах (режим «Частицы»). Форма одинакова на всех сценах, не зависит от разрешения/анизотропии сетки. ~ размер частицы.")]
+        float _splatRadiusWorld = 0.07f;
         [SerializeField, Tooltip("Вес одного сплата (чем больше — ярче объём). Доля нормализации считается автоматически.")]
         uint _splatterWeightFixed = 65000;
+        [SerializeField, Tooltip("Сколько частиц в вокселе соответствует «полной» плотности (=1). Меньше — ярче/плотнее дым. НЕ зависит от общего числа частиц — поэтому яркость не плывёт при росте/убыли популяции.")]
+        float _splatNormalizeParticlesPerVoxel = 8f;
 
         [SerializeField] Light _raymarchSunLight;
 
@@ -76,6 +78,14 @@ namespace ShrodingerFlow.Particles
         float _raymarchSunPhasePower = 2.2f;
         [SerializeField] Color _fluidAmbient = new Color(0.1f, 0.22f, 0.38f);
         [SerializeField] Color _fluidSunTint = new Color(0.52f, 0.78f, 1f);
+
+        [Header("Raymarch — стены/препятствия")]
+        [SerializeField, Tooltip("Рисовать стены лабиринта как твёрдые непрозрачные тела (берётся та же маска, что задаёт границу потока).")]
+        bool _renderWalls = true;
+        [SerializeField, Tooltip("Цвет стен.")]
+        Color _wallColor = new Color(0.20f, 0.23f, 0.30f);
+        [SerializeField, Range(0f, 1f), Tooltip("Базовая подсветка стен (доля цвета вне зависимости от направления на солнце).")]
+        float _wallAmbient = 0.4f;
 
         [Header("Raymarch — ψ только")]
         [SerializeField, Tooltip("Вычитается из ρ только для режима «Вероятность |ψ|²».")]
@@ -108,6 +118,11 @@ namespace ShrodingerFlow.Particles
         Material _raymarchMat;
         RenderTexture _densityVolumeRt;
         IRaymarchDensitySource _psiDensitySource;
+        IRaymarchSolidMaskSource _solidMaskSource;
+        RenderTexture _wallVolumeRt;
+        int _wallVolRx = -1;
+        int _wallVolRy;
+        int _wallVolRz;
         int _densityVolRx = -1;
         int _densityVolRy;
         int _densityVolRz;
@@ -136,6 +151,7 @@ namespace ShrodingerFlow.Particles
             if (buffers == null)
                 buffers = GetComponent<ParticleGpuBuffers>();
             _psiDensitySource = GetComponent<IRaymarchDensitySource>();
+            _solidMaskSource = GetComponent<IRaymarchSolidMaskSource>();
         }
 
         void OnEnable()
@@ -281,8 +297,72 @@ namespace ShrodingerFlow.Particles
                 psiDensityToVolume.Dispatch(k, gx, gy, gz);
             }
 
-            ApplyRaymarchUniforms(cam, volumeMinWorld, volumeSizeWorld, splats, rx, ry, rz);
+            bool walls = TryBuildWallVolume(rx, ry, rz);
+
+            ApplyRaymarchUniforms(cam, volumeMinWorld, volumeSizeWorld, splats, walls, rx, ry, rz);
             return true;
+        }
+
+        /// <summary>Маска стен (из источника симуляции) → 3D-текстура для раймарча. Стены статичны, но дёшево пересобрать каждый кадр.</summary>
+        bool TryBuildWallVolume(int rx, int ry, int rz)
+        {
+            if (!_renderWalls || psiDensityToVolume == null)
+                return false;
+            if (_solidMaskSource == null)
+                _solidMaskSource = GetComponent<IRaymarchSolidMaskSource>();
+            if (_solidMaskSource == null
+                || !_solidMaskSource.TryGetSolidMask(out ComputeBuffer mask, out int mrx, out int mry, out int mrz)
+                || mask == null || mrx != rx || mry != ry || mrz != rz)
+                return false;
+
+            EnsureWallVolume(rx, ry, rz);
+
+            int k = psiDensityToVolume.FindKernel("MaskToDensity");
+            psiDensityToVolume.SetBuffer(k, "SolidMask", mask);
+            psiDensityToVolume.SetTexture(k, "DensityOut", _wallVolumeRt);
+            psiDensityToVolume.SetInt("_ResX", rx);
+            psiDensityToVolume.SetInt("_ResY", ry);
+            psiDensityToVolume.SetInt("_ResZ", rz);
+            psiDensityToVolume.Dispatch(k, (rx + 7) / 8, (ry + 7) / 8, (rz + 7) / 8);
+            return true;
+        }
+
+        void EnsureWallVolume(int rx, int ry, int rz)
+        {
+            if (_wallVolumeRt != null && _wallVolRx == rx && _wallVolRy == ry && _wallVolRz == rz)
+                return;
+
+            ReleaseWallVolume();
+            _wallVolRx = rx;
+            _wallVolRy = ry;
+            _wallVolRz = rz;
+
+            // RHalf: UAV-совместим и фильтруется линейно на Metal (R8 как random-write не гарантирован).
+            var desc = new RenderTextureDescriptor(rx, ry, RenderTextureFormat.RHalf, 0)
+            {
+                dimension = TextureDimension.Tex3D,
+                volumeDepth = rz,
+                enableRandomWrite = true,
+                msaaSamples = 1
+            };
+            _wallVolumeRt = new RenderTexture(desc)
+            {
+                name = "WallMaskVolume3D",
+                filterMode = FilterMode.Bilinear,
+                wrapMode = TextureWrapMode.Clamp
+            };
+            _wallVolumeRt.Create();
+        }
+
+        void ReleaseWallVolume()
+        {
+            if (_wallVolumeRt != null)
+            {
+                _wallVolumeRt.Release();
+                Destroy(_wallVolumeRt);
+                _wallVolumeRt = null;
+            }
+            _wallVolRx = -1;
         }
 
         void DispatchParticleSplatterDensity(int rx, int ry, int rz, Vector3 volumeMinWorld, Vector3 volumeSizeWorld)
@@ -309,10 +389,13 @@ namespace ShrodingerFlow.Particles
             cs.SetInt("_ParticleCount", buffers.ActiveCount);
             cs.SetVector("_VolumeMinWorld", volumeMinWorld);
             cs.SetVector("_VolumeSizeWorld", volumeSizeWorld);
-            cs.SetFloat("_SplatSigmaCells", _splatterSigmaCells);
+            cs.SetFloat("_SplatRadiusWorld", _splatRadiusWorld);
             cs.SetInt("_SplatWeightFixed", (int)_splatterWeightFixed);
 
-            float denom = Mathf.Max(400f, buffers.ActiveCount * _splatterWeightFixed * 0.22f);
+            // Нормировка на ЛОКАЛЬНУЮ концентрацию (частиц/воксель), а не на общее число частиц.
+            // Старое `activeCount * weight * 0.22` делало дым тем тусклее, чем больше частиц всего
+            // (накопление дыма → темнее вместо плотнее) и заставляло яркость «плыть» по ходу симуляции.
+            float denom = Mathf.Max(400f, _splatterWeightFixed * Mathf.Max(0.25f, _splatNormalizeParticlesPerVoxel));
             cs.SetFloat("_ScratchDenom", denom);
 
             cs.Dispatch(kSplat, Mathf.Max(1, (buffers.ActiveCount + 255) / 256), 1, 1);
@@ -383,14 +466,16 @@ namespace ShrodingerFlow.Particles
                 enableRandomWrite = true,
                 msaaSamples = 1
             };
-            // Point: билinear смешивает 0 и облако → серое поле по всей коробке симуляции (не лечится множителями в шейдере).
-            _densityVolumeRt = new RenderTexture(desc) { name = "PsiDensityVolume3D", filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
+            // Bilinear (трилинейно для 3D) — мягкие капли. Серое поле раньше давала не фильтрация,
+            // а нормировка на общее число частиц + точечный LOAD в шейдере; то и другое исправлено.
+            _densityVolumeRt = new RenderTexture(desc) { name = "PsiDensityVolume3D", filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp };
             _densityVolumeRt.Create();
         }
 
         void ReleaseDensityVolume()
         {
             ReleaseSplatterScratch();
+            ReleaseWallVolume();
 
             if (_densityVolumeRt != null)
             {
@@ -403,7 +488,7 @@ namespace ShrodingerFlow.Particles
         }
 
         void ApplyRaymarchUniforms(Camera cam, Vector3 volumeMinWorld, Vector3 volumeSizeWorld, bool particleSplats,
-            int resX, int resY, int resZ)
+            bool walls, int resX, int resY, int resZ)
         {
             if (_raymarchMat.shader != shaderRaymarch && shaderRaymarch != null)
                 _raymarchMat.shader = shaderRaymarch;
@@ -440,6 +525,12 @@ namespace ShrodingerFlow.Particles
             _raymarchMat.SetVector("_FluidSunTint", new Vector4(_fluidSunTint.r, _fluidSunTint.g, _fluidSunTint.b, 1f));
 
             _raymarchMat.SetFloat("viewMarchStepSize", _raymarchStepSize);
+
+            // Стены: текстуру биндим всегда (валидную), включаем флагом — иначе семплинг несвязанной 3D-текстуры даёт мусор/варнинг.
+            _raymarchMat.SetTexture("_WallMap", walls && _wallVolumeRt != null ? _wallVolumeRt : _densityVolumeRt);
+            _raymarchMat.SetFloat("_WallEnabled", walls && _wallVolumeRt != null ? 1f : 0f);
+            _raymarchMat.SetVector("_WallColor", new Vector4(_wallColor.r, _wallColor.g, _wallColor.b, 1f));
+            _raymarchMat.SetFloat("_WallAmbient", _wallAmbient);
 
             Vector3 sunDir = ResolveRaymarchSunDirection();
             _raymarchMat.SetVector("dirToSun", sunDir);

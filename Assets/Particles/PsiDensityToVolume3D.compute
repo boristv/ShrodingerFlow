@@ -1,7 +1,9 @@
 #pragma kernel PsiToDensity
+#pragma kernel MaskToDensity
 
 StructuredBuffer<float2> Psi1;
 StructuredBuffer<float2> Psi2;
+StructuredBuffer<int> SolidMask;
 RWTexture3D<float4> DensityOut;
 
 uint _ResX;
@@ -19,4 +21,16 @@ void PsiToDensity(uint3 id : SV_DispatchThreadID)
     float2 p2 = Psi2[idx];
     float rho = dot(p1, p1) + dot(p2, p2);
     DensityOut[id] = float4(rho, rho, rho, 1.0);
+}
+
+// Маска твёрдых ячеек (стен) → объём для раймарча. Layout как у ψ: idx = i*ry*rz + j*rz + k.
+[numthreads(8, 8, 8)]
+void MaskToDensity(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _ResX || id.y >= _ResY || id.z >= _ResZ)
+        return;
+
+    uint idx = id.x * _ResY * _ResZ + id.y * _ResZ + id.z;
+    float v = SolidMask[idx] != 0 ? 1.0 : 0.0;
+    DensityOut[id] = float4(v, v, v, 1.0);
 }

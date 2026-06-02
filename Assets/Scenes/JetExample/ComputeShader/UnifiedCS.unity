@@ -303,8 +303,9 @@ MonoBehaviour:
   psiDensityToVolume: {fileID: 7200000, guid: 0c4c6524fcf59422f9d8eb76ac53d6c4, type: 3}
   particlesToDensityVolume: {fileID: 7200000, guid: f4e3d2c1b0a9876543210fedcba98765,
     type: 3}
-  _splatterSigmaCells: 1.25
+  _splatRadiusWorld: 0.07
   _splatterWeightFixed: 80000
+  _splatNormalizeParticlesPerVoxel: 8
   _raymarchSunLight: {fileID: 797636674}
   _raymarchDensityGamma: 0.55
   _raymarchOpticalDensity: 11
@@ -314,6 +315,9 @@ MonoBehaviour:
   _raymarchSunPhasePower: 2.2
   _fluidAmbient: {r: 0.1, g: 0.22, b: 0.38, a: 1}
   _fluidSunTint: {r: 0.52, g: 0.78, b: 1, a: 1}
+  _renderWalls: 1
+  _wallColor: {r: 0.2, g: 0.23, b: 0.3, a: 1}
+  _wallAmbient: 0.4
   _raymarchDensityOffset: 200
   _raymarchStepSize: 0.02
   _raymarchDebugTintWhenRayHitsBounds: 0

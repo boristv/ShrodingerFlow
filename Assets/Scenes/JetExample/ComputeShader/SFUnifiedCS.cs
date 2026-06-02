@@ -8,7 +8,7 @@ using UnityEditor;
 // «Apply Scenario Defaults» берёт числа из SFUnifiedScenarioPresets (ассет или встроенная копия),
 // а не из switch в этом файле. Референс: JetExampleCS.unity, UnifiedCS.unity — см. SFUnifiedScenarioPresets.cs.
 
-public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensitySource
+public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensitySource, IRaymarchSolidMaskSource
 {
     public enum ScenarioType
     {
@@ -1427,6 +1427,26 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         psi2 = _isf.psi2;
         volumeMinWorld = transform.position;
         volumeSizeWorld = new Vector3(vol_size[0], vol_size[1], vol_size[2]);
+        resX = _isf.resX;
+        resY = _isf.resY;
+        resZ = _isf.resZ;
+        return true;
+    }
+
+    #endregion
+
+    #region IRaymarchSolidMaskSource
+
+    /// <summary>Маска стен лабиринта для раймарча — та же, что задаёт границу потока (только SmokeMaze2D).</summary>
+    public bool TryGetSolidMask(out ComputeBuffer solidMask, out int resX, out int resY, out int resZ)
+    {
+        solidMask = null;
+        resX = resY = resZ = 0;
+        if (!_initialized || _isf == null
+            || _scenario != ScenarioType.SmokeMaze2D || _mazeWallMaskBuf == null)
+            return false;
+
+        solidMask = _mazeWallMaskBuf;
         resX = _isf.resX;
         resY = _isf.resY;
         resZ = _isf.resZ;

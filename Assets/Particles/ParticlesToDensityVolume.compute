@@ -16,7 +16,7 @@ uint _ParticleCount;
 float3 _VolumeMinWorld;
 float3 _VolumeSizeWorld;
 
-float _SplatSigmaCells;
+float _SplatRadiusWorld;
 uint _SplatWeightFixed;
 float _ScratchDenom;
 
@@ -36,21 +36,23 @@ void SplatterParticles(uint id : SV_DispatchThreadID)
         return;
 
     float3 wp = ParticlePositions[id];
-    float3 local = wp - _VolumeMinWorld;
-    float3 uvw = local / _VolumeSizeWorld;
+    float3 uvw = (wp - _VolumeMinWorld) / _VolumeSizeWorld;
     if (any(uvw < 0.0) || any(uvw > 1.0))
         return;
 
-    float3 gf = uvw * float3((float)_ResX - 1.0001, (float)_ResY - 1.0001, (float)_ResZ - 1.0001);
-    int3 center = (int3)floor(gf + 0.5);
+    float3 res = float3((float)_ResX, (float)_ResY, (float)_ResZ);
+    float3 cellWorld = _VolumeSizeWorld / res;          // размер вокселя по миру (по осям)
+    int3 center = (int3)round(uvw * res - 0.5);         // ближайший воксель (центр i при uvw=(i+0.5)/res)
 
-    int r = 2;
-    float sig = max(0.25, _SplatSigmaCells);
-    float sig2 = 2.0 * sig * sig;
+    // Радиус сплата в МИРОВЫХ единицах → форма капли одинакова на всех сценах,
+    // не зависит от анизотропии/разрешения сетки. Расстояние тоже в мире → изотропно.
+    float radWorld = max(_SplatRadiusWorld, 1e-4);
+    float inv2sig2 = 1.0 / (2.0 * (radWorld * 0.5) * (radWorld * 0.5)); // радиус ≈ 2σ
+    int3 rad = clamp((int3)ceil(radWorld / cellWorld), int3(1, 1, 1), int3(4, 4, 4));
 
-    for (int dz = -r; dz <= r; dz++)
-    for (int dy = -r; dy <= r; dy++)
-    for (int dx = -r; dx <= r; dx++)
+    for (int dz = -rad.z; dz <= rad.z; dz++)
+    for (int dy = -rad.y; dy <= rad.y; dy++)
+    for (int dx = -rad.x; dx <= rad.x; dx++)
     {
         int3 c = center + int3(dx, dy, dz);
         if (any(c < 0))
@@ -58,8 +60,9 @@ void SplatterParticles(uint id : SV_DispatchThreadID)
         if (c.x >= (int)_ResX || c.y >= (int)_ResY || c.z >= (int)_ResZ)
             continue;
 
-        float dist = length(float3(dx, dy, dz));
-        float w = exp(-(dist * dist) / sig2);
+        float3 voxCenterWorld = _VolumeMinWorld + (float3(c) + 0.5) * cellWorld;
+        float3 dWorld = wp - voxCenterWorld;
+        float w = exp(-dot(dWorld, dWorld) * inv2sig2);
         uint add = (uint)(w * (float)_SplatWeightFixed + 0.5);
         if (add == 0u)
             continue;

@@ -37,6 +37,12 @@ Shader "Fluid/Raymarching"
             TEXTURE3D(_DensityMap);
             SAMPLER(sampler_DensityMap);
 
+            TEXTURE3D(_WallMap);
+            SAMPLER(sampler_WallMap);
+            float _WallEnabled;
+            float4 _WallColor;
+            float _WallAmbient;
+
             float4 _RayViewport_BL;
             float4 _RayViewport_BR;
             float4 _RayViewport_TL;
@@ -102,12 +108,26 @@ Shader "Fluid/Raymarching"
 
             float SampleDensityVoxel(float3 uvw)
             {
-                float3 dim = float3(max(_DensityRes.x, 1), max(_DensityRes.y, 1), max(_DensityRes.z, 1));
-                float3 u = saturate(uvw);
-                float3 t = u * dim - 1e-4;
-                float3 hi = dim - float3(1, 1, 1);
-                int3 ijk = int3(clamp(floor(t), float3(0, 0, 0), hi));
-                return LOAD_TEXTURE3D_LOD(_DensityMap, ijk, 0).r;
+                // Трилинейная фильтрация (sampler берёт filterMode текстуры = Bilinear) — мягкие
+                // капли вместо вокселей-кубиков. Точечный LOAD давал «квадрат вокруг частицы».
+                return SAMPLE_TEXTURE3D_LOD(_DensityMap, sampler_DensityMap, saturate(uvw), 0).r;
+            }
+
+            float SampleWall(float3 uvw)
+            {
+                return SAMPLE_TEXTURE3D_LOD(_WallMap, sampler_WallMap, saturate(uvw), 0).r;
+            }
+
+            // Нормаль поверхности стены — антиградиент маски (указывает наружу из твёрдого).
+            float3 WallNormal(float3 uvw)
+            {
+                float3 e = 1.0 / float3(max(_DensityRes.x, 1), max(_DensityRes.y, 1), max(_DensityRes.z, 1));
+                float gx = SampleWall(uvw + float3(e.x, 0, 0)) - SampleWall(uvw - float3(e.x, 0, 0));
+                float gy = SampleWall(uvw + float3(0, e.y, 0)) - SampleWall(uvw - float3(0, e.y, 0));
+                float gz = SampleWall(uvw + float3(0, 0, e.z)) - SampleWall(uvw - float3(0, 0, e.z));
+                float3 g = float3(gx, gy, gz);
+                float len = length(g);
+                return len > 1e-5 ? -g / len : float3(0, 1, 0);
             }
 
             half3 ACESFilm(half3 x)
@@ -169,6 +189,9 @@ Shader "Fluid/Raymarching"
                 float transmittance = 1.0;
                 float maxRho = 0;
 
+                bool wallHit = false;
+                float3 wallShaded = 0;
+
                 uint iter = 0;
                 while (distAlong < marchLen && iter < 512)
                 {
@@ -177,6 +200,16 @@ Shader "Fluid/Raymarching"
 
                     if (all(uvw >= 0) && all(uvw <= 1))
                     {
+                        // Стена — непрозрачная поверхность: всё за ней перекрыто, луч останавливается.
+                        if (_WallEnabled > 0.5 && SampleWall(uvw) > 0.5)
+                        {
+                            float3 n = WallNormal(uvw);
+                            float ndl = max(0.0, dot(n, dirToSun));
+                            wallShaded = _WallColor.rgb * (_WallAmbient + (1.0 - _WallAmbient) * ndl);
+                            wallHit = true;
+                            break;
+                        }
+
                         float rhoRaw = SampleDensityVoxel(uvw) - volumeValueOffset;
                         rhoRaw = max(rhoRaw, 0);
                         float rho = pow(saturate(rhoRaw), max(_DensityGamma, 0.01));
@@ -200,12 +233,17 @@ Shader "Fluid/Raymarching"
                     iter++;
                 }
 
-                if (maxRho < 0.00002)
+                // Нет ни дыма, ни стены — отдаём фон без изменений (совпадает с ранним выходом → нет каймы).
+                if (!wallHit && maxRho < 0.00002)
                     return half4(bgScene, 1);
 
-                // Фон — уже отрендеренное небо/земля из _CameraOpaqueTexture, не аналитический SampleSky (иначе серый контур).
-                float3 rgb = scattered + bgScene * saturate(transmittance);
-                rgb = ACESFilm(rgb);
+                // «Фон» для луча: стена (если попали) перекрывает сцену; дым перед стеной её затеняет.
+                float3 background = wallHit ? wallShaded : bgScene;
+
+                // ACES — ТОЛЬКО к свету дыма. Если тонмапить весь кадр (вместе с фоном), то в кайме
+                // вокруг дыма (transmittance≈1, дыма почти нет) фон тоже уходит в ACES и сереет,
+                // а снаружи возвращается сырой bgScene → виден серый блочный ореол по краю сплата.
+                float3 rgb = ACESFilm(scattered) + background * saturate(transmittance);
                 return half4(rgb, 1);
             }
             ENDHLSL
