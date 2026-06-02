@@ -10,6 +10,7 @@
 #pragma kernel ApplyJetBoundary
 #pragma kernel GravityPsi2
 #pragma kernel HeatSinkPsi1
+#pragma kernel UniformForce
 
 RWStructuredBuffer<float2> _Psi1;
 RWStructuredBuffer<float2> _Psi2;
@@ -244,4 +245,19 @@ void HeatSinkPsi1(uint3 id : SV_DispatchThreadID)
     if (i >= _Num) return;
     if (_IsJet[i] == 0) return;
     _Psi1[i] = float2(0, 0);
+}
+
+// Однородная объёмная сила (постоянный градиент давления / «ветер»): фаза (f·P)·dt/ℏ
+// на ОБЕ компоненты — прибавка скорости f·dt у всей жидкости, независимо от |ψ₁|/|ψ₂|.
+// В отличие от GravityPsi2 (только ψ₂) гонит основную массу потока.
+[numthreads(256, 1, 1)]
+void UniformForce(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    float phase = (_GX * _PX[i] + _GY * _PY[i] + _GZ * _PZ[i]) * _DT / _Hbar;
+    float2 rot = float2(cos(phase), sin(phase));
+    _Psi1[i] = cmul(_Psi1[i], rot);
+    _Psi2[i] = cmul(_Psi2[i], rot);
 }

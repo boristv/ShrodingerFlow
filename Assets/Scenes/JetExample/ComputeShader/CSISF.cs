@@ -29,7 +29,7 @@ namespace ComputeShaderSF
         private int _normalizeK, _gaugeK, _shiftK, _mulEachK;
         private int _copyR2CK, _fftNormK, _velOneK;
         private int _staggeredK, _divK, _jetK;
-        private int _gravK, _heatK;
+        private int _gravK, _heatK, _uniformForceK;
 
         public void Init(ComputeShader kernels, ComputeShader fftShader,
             ComputeShader lesShader, int[] volSize, int[] volRes, float hbar, float dt)
@@ -69,6 +69,7 @@ namespace ComputeShaderSF
             _jetK = kernels.FindKernel("ApplyJetBoundary");
             _gravK = kernels.FindKernel("GravityPsi2");
             _heatK = kernels.FindKernel("HeatSinkPsi1");
+            _uniformForceK = kernels.FindKernel("UniformForce");
 
             psi1 = new ComputeBuffer(num, sizeof(float) * 2);
             psi2 = new ComputeBuffer(num, sizeof(float) * 2);
@@ -384,6 +385,26 @@ namespace ComputeShaderSF
             _kernels.SetBuffer(_gravK, "_PY", _py);
             _kernels.SetBuffer(_gravK, "_PZ", _pz);
             _kernels.Dispatch(_gravK, Groups1D, 1, 1);
+        }
+
+        /// <summary>
+        /// Однородная объёмная сила (постоянный градиент давления / «ветер») на обе компоненты ψ.
+        /// Прибавляет скорость f·dt всей жидкости; после вызова нужен PressureProject.
+        /// Для SmokeMaze2D: гонит поток источник → лабиринт → вытяжка (локальный outflow этого не делает).
+        /// </summary>
+        public void ApplyUniformForce(Vector3 f)
+        {
+            SetCommonUniforms();
+            _kernels.SetFloat("_GX", f.x);
+            _kernels.SetFloat("_GY", f.y);
+            _kernels.SetFloat("_GZ", f.z);
+            _kernels.SetFloat("_DT", dt);
+            _kernels.SetBuffer(_uniformForceK, "_Psi1", psi1);
+            _kernels.SetBuffer(_uniformForceK, "_Psi2", psi2);
+            _kernels.SetBuffer(_uniformForceK, "_PX", _px);
+            _kernels.SetBuffer(_uniformForceK, "_PY", _py);
+            _kernels.SetBuffer(_uniformForceK, "_PZ", _pz);
+            _kernels.Dispatch(_uniformForceK, Groups1D, 1, 1);
         }
 
         private void ApplyHeatSinkPsi1(ComputeBuffer isJet)

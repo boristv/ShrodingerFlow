@@ -326,9 +326,10 @@ namespace ComputeShaderSF
         /// При уплотнении переставляется тем же образом, что и позиции — иначе индекс перепутывает историю после компакта.
         /// </param>
         /// <param name="reorderAux2">Опционально второй массив (напр. сглаженная скорость для отображения).</param>
+        /// <param name="reorderAux3">Опционально третий массив float той же длины (напр. возраст трассеров).</param>
         public int CompactParticles(float[] px, float[] py, float[] pz,
             float maxX, float maxY, float maxZ,
-            Vector3[] reorderAux1 = null, Vector3[] reorderAux2 = null)
+            Vector3[] reorderAux1 = null, Vector3[] reorderAux2 = null, float[] reorderAux3 = null)
         {
             if (_size == 0) return 0;
 
@@ -353,6 +354,8 @@ namespace ComputeShaderSF
                         reorderAux1[alive] = reorderAux1[i];
                     if (reorderAux2 != null)
                         reorderAux2[alive] = reorderAux2[i];
+                    if (reorderAux3 != null)
+                        reorderAux3[alive] = reorderAux3[i];
                 }
                 alive++;
             }

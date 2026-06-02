@@ -195,7 +195,10 @@ MonoBehaviour:
   _mazeVentCenter: {x: 4.75, y: 0.5, z: 2.35}
   _mazeVentHalf: {x: 0.12, y: 0.45, z: 0.35}
   _mazeVentSuction: {x: 0.5, y: 0, z: 0}
+  _mazeWind: {x: 0.5, y: 0, z: 0}
   _mazeBoundaryIters: 4
+  _mazeParticleLifetime: 600
+  _mazeRampSteps: 60
   _mazeParticleDispersion: 0
   _mazeDispersionWallBoost: 0
   _mazeVentDrift: 0

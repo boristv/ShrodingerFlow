@@ -102,8 +102,14 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     [SerializeField] private Vector3 _mazeVentHalf = new Vector3(0.12f, 0.45f, 0.35f);
     [Tooltip("Outflow в зоне вытяжки: скорость +X выталкивает поток наружу через проём в правой стене и создаёт тягу через лабиринт. 0 — без тяги (поток застаивается).")]
     [SerializeField] private Vector3 _mazeVentSuction = new Vector3(0.5f, 0f, 0f);
+    [Tooltip("«Ветер» — однородная объёмная сила (постоянный градиент давления) на всю жидкость. ЭТО гонит поток источник → лабиринт → вытяжка. Локальный outflow вытяжки тягу через комнату не создаёт. Крути .x для силы продувки.")]
+    [SerializeField] private Vector3 _mazeWind = new Vector3(0.5f, 0f, 0f);
     [Tooltip("Сколько раз за шаг переустанавливать границы (стены/источник/вытяжка) + PressureProject. Больше — жёстче стены, меньше протечки.")]
     [SerializeField, Range(1, 8)] private int _mazeBoundaryIters = 4;
+    [Tooltip("Время жизни трассера (шагов). Должно хватать, чтобы доплыть до вытяжки (домен 5 ед. при ветре ~0.5 ≈ 240 шагов). Старые удаляются → популяция постоянна. 0 — без срока.")]
+    [SerializeField, Range(0, 2000)] private int _mazeParticleLifetime = 600;
+    [Tooltip("Плавный разгон inflow/outflow за N шагов — убирает резкий выброс на старте.")]
+    [SerializeField, Range(0, 240)] private int _mazeRampSteps = 60;
     [Tooltip("Турбулентная дисперсия трассеров в плоскости XZ (доли ячейки): рассеивание для поиска смещённых проходов.")]
     [SerializeField, Range(0f, 1f)] private float _mazeParticleDispersion = 0.24f;
     [Tooltip("Усиление дисперсии у стен (×) — помогает огибать препятствия.")]
@@ -166,6 +172,8 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     private Vector3[] _prevPos;
     /// <summary>Сглаженная скорость для цвета в шейдере (те же индексы, что у частиц GPU).</summary>
     private Vector3[] _displayVelSmooth;
+    /// <summary>Возраст трассеров в шагах (те же индексы); для срока жизни в SmokeMaze2D.</summary>
+    private float[] _mazeAge;
     private int _particlesCount;
 
     private const float DisplayVelocityBlend = 0.32f;
@@ -216,6 +224,7 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         _pzArr = new float[maxParticles];
         _prevPos = new Vector3[maxParticles];
         _displayVelSmooth = new Vector3[maxParticles];
+        _mazeAge = new float[maxParticles];
 
         InitScenario();
         _initialized = true;
@@ -752,10 +761,19 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         _isf.kinematicViscosity = _kinematicViscosity;
         _isf.UpdateSpace(_useLES, null);
 
-        // Тяга через лабиринт = inflow на источнике + outflow на вытяжке.
+        // Плавный разгон (smoothstep) убирает ударный выброс в неподвижную жидкость на старте.
+        float ramp = _mazeRampSteps > 0 ? Mathf.Clamp01((float)iterator / _mazeRampSteps) : 1f;
+        ramp = ramp * ramp * (3f - 2f * ramp);
+
+        // Главный движитель: однородная сила («ветер») гонит ВСЮ жидкость, стены её разводят
+        // по лабиринту к единственному выходу — вытяжке. Без неё локальный outflow не тянет.
+        if (_mazeWind.sqrMagnitude > 1e-8f)
+            _isf.ApplyUniformForce(_mazeWind * ramp);
+
+        // Тяга через лабиринт = «ветер» + inflow на источнике + outflow на вытяжке.
         // Стены (k=0) и оба отверстия переустанавливаются несколько раз с PressureProject,
         // чтобы границы держались жёстко и поток не «протекал» сквозь тонкие перегородки.
-        float invH = 1f / hbar;
+        float invH = ramp / hbar;
         bool hasVent = _mazeVentSuction.sqrMagnitude > 1e-8f;
         for (int b = 0; b < _mazeBoundaryIters; b++)
         {
@@ -794,36 +812,42 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
             yy[i] = Random.Range(_mazeSourceCenter.y - _mazeSourceHalf.y, _mazeSourceCenter.y + _mazeSourceHalf.y);
             zz[i] = Random.Range(_mazeSourceCenter.z - _mazeSourceHalf.z, _mazeSourceCenter.z + _mazeSourceHalf.z);
         }
+        int before = _particles.Size;
         _particles.AddParticles(xx, yy, zz, _nParticles);
         _particlesCount = _particles.Size;
+        for (int i = before; i < _particlesCount; i++)
+            _mazeAge[i] = 0f;
     }
 
-    /// <summary>Удалить частицы вне домена и в зоне вытяжки (имитация удаления дыма).</summary>
+    /// <summary>Удалить частицы в зоне вытяжки (имитация откачки) и по сроку жизни (старый дым «выгорает»).</summary>
     private void CompactMazeParticles()
     {
         if (_particlesCount == 0) return;
 
         _particles.ReadPositions(_pxArr, _pyArr, _pzArr);
-        int removedAtVent = 0;
+        int removedAtVent = 0, removedOld = 0;
         for (int i = 0; i < _particlesCount; i++)
         {
             float px = _pxArr[i], py = _pyArr[i], pz = _pzArr[i];
-            if (px >= _mazeVentMin.x && px <= _mazeVentMax.x
+            bool inVent = px >= _mazeVentMin.x && px <= _mazeVentMax.x
                 && py >= _mazeVentMin.y && py <= _mazeVentMax.y
-                && pz >= _mazeVentMin.z && pz <= _mazeVentMax.z)
+                && pz >= _mazeVentMin.z && pz <= _mazeVentMax.z;
+            _mazeAge[i] += 1f;
+            bool tooOld = _mazeParticleLifetime > 0 && _mazeAge[i] > _mazeParticleLifetime;
+            if (inVent || tooOld)
             {
                 _pxArr[i] = _pyArr[i] = _pzArr[i] = -1f;
-                removedAtVent++;
+                if (inVent) removedAtVent++; else removedOld++;
             }
         }
         _particles.WritePositions(_pxArr, _pyArr, _pzArr, _particlesCount);
         _particles.CompactParticles(_pxArr, _pyArr, _pzArr,
-            vol_size[0], vol_size[1], vol_size[2], _prevPos, _displayVelSmooth);
+            vol_size[0], vol_size[1], vol_size[2], _prevPos, _displayVelSmooth, _mazeAge);
         _particlesCount = _particles.Size;
-        LogSmokeMazeDiagnostics(removedAtVent);
+        LogSmokeMazeDiagnostics(removedAtVent, removedOld);
     }
 
-    private void LogSmokeMazeDiagnostics(int removedAtVent)
+    private void LogSmokeMazeDiagnostics(int removedAtVent, int removedOld)
     {
         if (!_mazeDebugMetrics || _mazeDebugEverySteps <= 0 || iterator % _mazeDebugEverySteps != 0)
             return;
@@ -865,7 +889,7 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
 
         float inv = _particlesCount > 0 ? 1f / _particlesCount : 0f;
         Debug.Log(
-            $"[SmokeMaze2D metrics] step={iterator} particles={_particlesCount} removedVent={removedAtVent} " +
+            $"[SmokeMaze2D metrics] step={iterator} particles={_particlesCount} removedVent={removedAtVent} removedOld={removedOld} " +
             $"sections L/M1/M2/R={left}/{mid1}/{mid2}/{right} z L/M/U={lower}/{middle}/{upper} " +
             $"nearWalls W1/W2/W3/outer={nearWall1}/{nearWall2}/{nearWall3}/{nearOuter} " +
             $"W2 gaps low/blocked/high={wall2LowerGap}/{wall2BlockedBand}/{wall2UpperGap} " +
