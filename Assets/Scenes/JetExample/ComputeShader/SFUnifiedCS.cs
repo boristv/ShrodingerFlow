@@ -103,11 +103,11 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     [Tooltip("Опциональный фазовый драйвер в зоне вытяжки. Обычно 0: тяга задается мягким drift, чтобы не создавать обратный поток к источнику.")]
     [SerializeField] private Vector3 _mazeVentSuction = Vector3.zero;
     [Tooltip("Турбулентная дисперсия трассеров в плоскости XZ (доли ячейки): рассеивание для поиска смещённых проходов.")]
-    [SerializeField, Range(0f, 1f)] private float _mazeParticleDispersion = 0.24f;
+    [SerializeField, Range(0f, 1f)] private float _mazeParticleDispersion = 0f;
     [Tooltip("Усиление дисперсии у стен (×) — помогает огибать препятствия.")]
-    [SerializeField, Range(0f, 5f)] private float _mazeDispersionWallBoost = 2.0f;
+    [SerializeField, Range(0f, 5f)] private float _mazeDispersionWallBoost = 0f;
     [Tooltip("Скорость мягкого продольного потока трассеров по лабиринту; у стен добавляется curl.")]
-    [SerializeField] private float _mazeVentDrift = 0.16f;
+    [SerializeField] private float _mazeVentDrift = 0f;
     [Tooltip("Шаг обхода стены вверх/вниз к проёму (доли ячейки).")]
     [SerializeField, Range(0f, 2f)] private float _mazeWallDeflect = 0f;
     [Tooltip("Радиус поиска свободной ячейки при столкновении (в ячейках сетки; для проходов нужно ≥30).")]
