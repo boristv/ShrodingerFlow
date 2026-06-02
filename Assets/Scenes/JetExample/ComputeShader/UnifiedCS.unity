@@ -191,31 +191,32 @@ MonoBehaviour:
   _mazeWall3SolidMaxZ: 2
   _mazeSourceCenter: {x: 0.25, y: 0.5, z: 1.5}
   _mazeSourceHalf: {x: 0.12, y: 0.45, z: 0.45}
-  _mazeEmitVelocity: {x: 0.25, y: 0, z: 0}
+  _mazeEmitVelocity: {x: 0.6, y: 0, z: 0}
   _mazeVentCenter: {x: 4.75, y: 0.5, z: 2.35}
   _mazeVentHalf: {x: 0.12, y: 0.45, z: 0.35}
-  _mazeVentSuction: {x: 0, y: 0, z: 0}
-  _mazeParticleDispersion: 0.24
-  _mazeDispersionWallBoost: 2
-  _mazeVentDrift: 0.16
+  _mazeVentSuction: {x: 0.5, y: 0, z: 0}
+  _mazeBoundaryIters: 4
+  _mazeParticleDispersion: 0
+  _mazeDispersionWallBoost: 0
+  _mazeVentDrift: 0
   _mazeWallDeflect: 0
-  _mazePushSearchCells: 36
+  _mazePushSearchCells: 12
   _cigaretteBackgroundU: {x: 0.1, y: 0, z: 0}
   _cigaretteJet: {x: 0, y: 1, z: 0}
   _cigaretteGravity: {x: 0, y: 1, z: 0}
   _cigaretteHeatSphereCen: {x: 1, y: 0.5, z: 1.6127148}
   _cigaretteHeatSphereRad: 0.2
-  _nParticles: 60
+  _nParticles: 120
   _particleSize: 0.06
   _boxSpawnX: {x: 3, y: 3}
   _boxSpawnY: {x: 0.1, y: 1.9}
   _boxSpawnZ: {x: 0.5, y: 1.9}
   _applyPsi2Gravity: 0
   _psi2Gravity: {x: 0, y: 1, z: 0}
-  _useLES: 1
-  _kinematicViscosity: 0.0004
+  _useLES: 0
+  _kinematicViscosity: 0.00005
   _paused: 0
-  _stepsPerFrame: 2
+  _stepsPerFrame: 4
 --- !u!4 &362555268
 Transform:
   m_ObjectHideFlags: 0

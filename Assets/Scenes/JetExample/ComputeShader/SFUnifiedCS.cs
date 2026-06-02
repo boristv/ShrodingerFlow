@@ -100,8 +100,10 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     [Tooltip("Вытяжка (зелёная): центр и полуразмер AABB.")]
     [SerializeField] private Vector3 _mazeVentCenter = new Vector3(4.75f, 0.5f, 2.35f);
     [SerializeField] private Vector3 _mazeVentHalf = new Vector3(0.12f, 0.45f, 0.35f);
-    [Tooltip("Опциональный фазовый драйвер в зоне вытяжки. Обычно 0: тяга задается мягким drift, чтобы не создавать обратный поток к источнику.")]
-    [SerializeField] private Vector3 _mazeVentSuction = Vector3.zero;
+    [Tooltip("Outflow в зоне вытяжки: скорость +X выталкивает поток наружу через проём в правой стене и создаёт тягу через лабиринт. 0 — без тяги (поток застаивается).")]
+    [SerializeField] private Vector3 _mazeVentSuction = new Vector3(0.5f, 0f, 0f);
+    [Tooltip("Сколько раз за шаг переустанавливать границы (стены/источник/вытяжка) + PressureProject. Больше — жёстче стены, меньше протечки.")]
+    [SerializeField, Range(1, 8)] private int _mazeBoundaryIters = 4;
     [Tooltip("Турбулентная дисперсия трассеров в плоскости XZ (доли ячейки): рассеивание для поиска смещённых проходов.")]
     [SerializeField, Range(0f, 1f)] private float _mazeParticleDispersion = 0.24f;
     [Tooltip("Усиление дисперсии у стен (×) — помогает огибать препятствия.")]
@@ -382,7 +384,7 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
                 break;
 
             case ScenarioType.SmokeMaze2D:
-                InitPsiPlaneWave(new Vector3(0.06f, 0f, 0f));
+                InitPsiPlaneWave(new Vector3(0.12f, 0f, 0f));
                 _mazeWallMaskBuf = BuildMazeWallMask();
                 _mazeSourceMaskBuf = BuildBoxMask(_mazeSourceCenter, _mazeSourceHalf);
                 _mazeVentMaskBuf = BuildBoxMask(_mazeVentCenter, _mazeVentHalf);
@@ -742,45 +744,41 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
             _particles.WrapPositions(vol_size[0], vol_size[1], vol_size[2]);
     }
 
+    // Чистая ISF-адвекция: поле скорости само огибает стены и сворачивает вихри.
+    // Трассеры несутся реальным полем; никаких «ручных» drift/disperse/deflect — иначе
+    // движение определяется не физикой, а скриптом (нет завихрений, частицы залипают у стен).
     private void SimulationStepSmokeMaze()
     {
         _isf.kinematicViscosity = _kinematicViscosity;
         _isf.UpdateSpace(_useLES, null);
 
+        // Тяга через лабиринт = inflow на источнике + outflow на вытяжке.
+        // Стены (k=0) и оба отверстия переустанавливаются несколько раз с PressureProject,
+        // чтобы границы держались жёстко и поток не «протекал» сквозь тонкие перегородки.
         float invH = 1f / hbar;
-        _isf.ApplyJetBoundary(_mazeWallMaskBuf, 0f, 0f, 0f, 0f);
-        _isf.PressureProject();
-        _isf.ApplyJetBoundary(_mazeWallMaskBuf, 0f, 0f, 0f, 0f);
-        _isf.ApplyJetBoundary(_mazeSourceMaskBuf,
-            _mazeEmitVelocity.x * invH, _mazeEmitVelocity.y * invH, _mazeEmitVelocity.z * invH, 0f);
-        if (_mazeVentSuction.sqrMagnitude > 1e-8f)
+        bool hasVent = _mazeVentSuction.sqrMagnitude > 1e-8f;
+        for (int b = 0; b < _mazeBoundaryIters; b++)
         {
-            _isf.ApplyJetBoundary(_mazeVentMaskBuf,
-                _mazeVentSuction.x * invH, _mazeVentSuction.y * invH, _mazeVentSuction.z * invH, 0f);
+            _isf.ApplyJetBoundary(_mazeWallMaskBuf, 0f, 0f, 0f, 0f);
+            _isf.ApplyJetBoundary(_mazeSourceMaskBuf,
+                _mazeEmitVelocity.x * invH, _mazeEmitVelocity.y * invH, _mazeEmitVelocity.z * invH, 0f);
+            if (hasVent)
+            {
+                _isf.ApplyJetBoundary(_mazeVentMaskBuf,
+                    _mazeVentSuction.x * invH, _mazeVentSuction.y * invH, _mazeVentSuction.z * invH, 0f);
+            }
+            _isf.PressureProject();
         }
-        _isf.PressureProject();
 
         SpawnMazeSourceParticles();
         _isf.UpdateVelocities(_vel);
         _particles.CalculateMovement(_vel, clampSampling: true);
-        _particles.DriftInSourceBox(_mazeSourceCenter, _mazeSourceHalf, _mazeEmitVelocity, dt);
-        _particles.DriftTowardVent(_mazeVentCenter, _mazeVentDrift, dt, _mazeWallMaskBuf);
-        float mcell = Mathf.Min(_isf.dx, _isf.dz);
-        if (_mazeParticleDispersion > 1e-4f)
-        {
-            _particles.DisperseMaze(_mazeWallMaskBuf,
-                _mazeParticleDispersion * mcell, _mazeDispersionWallBoost, iterator);
-        }
-        if (_mazeWallDeflect > 1e-4f)
-        {
-            _particles.DeflectAtWall(_mazeWallMaskBuf,
-                _mazeWallDeflect * mcell, _mazePushSearchCells);
-        }
-        for (int pass = 0; pass < 1; pass++)
-        {
-            _particles.PushOutOfSolidMask(_mazeWallMaskBuf, _mazePushSearchCells,
-                _mazeVentCenter, 0.45f);
-        }
+
+        // Единственная «коррекция» — анти-вклинивание: трассер, попавший внутрь стены
+        // (из-за интерполяции у кромки), возвращается в ближайшую свободную ячейку. Без
+        // направленного смещения, поэтому линий-залипаний у стен не образуется.
+        _particles.PushOutOfSolidMask(_mazeWallMaskBuf, _mazePushSearchCells,
+            _mazeVentCenter, 0f);
         _particles.ClampPositionsToVolume(vol_size[0], vol_size[1], vol_size[2]);
         CompactMazeParticles();
     }

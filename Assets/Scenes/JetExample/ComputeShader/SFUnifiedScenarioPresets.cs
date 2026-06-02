@@ -160,20 +160,23 @@ public class SFUnifiedScenarioPresets : ScriptableObject
             wall3SolidMaxZ = 2.0f,
             sourceCenter = new Vector3(0.25f, 0.5f, 1.5f),
             sourceHalf = new Vector3(0.12f, 0.45f, 0.45f),
-            emitVelocity = new Vector3(0.25f, 0f, 0f),
+            // Тяга через лабиринт: сильный inflow слева + outflow справа.
+            emitVelocity = new Vector3(0.6f, 0f, 0f),
             ventCenter = new Vector3(4.75f, 0.5f, 2.35f),
             ventHalf = new Vector3(0.12f, 0.45f, 0.35f),
-            ventSuction = Vector3.zero,
-            particleDispersion = 0.24f,
-            dispersionWallBoost = 2.0f,
-            ventDrift = 0.16f,
+            ventSuction = new Vector3(0.5f, 0f, 0f),
+            // Ручные drift/disperse/deflect выключены — поток несёт само поле ISF.
+            particleDispersion = 0f,
+            dispersionWallBoost = 0f,
+            ventDrift = 0f,
             wallDeflect = 0f,
-            pushSearchCells = 36,
-            kinematicViscosity = 0.0004f,
-            nParticles = 60,
+            pushSearchCells = 12,
+            // LES off + почти нулевая ν — иначе вихри сглаживаются и не образуются.
+            kinematicViscosity = 0.00005f,
+            nParticles = 120,
             particleSize = 0.06f,
-            stepsPerFrame = 2,
-            useLES = true
+            stepsPerFrame = 4,
+            useLES = false
         };
     }
 

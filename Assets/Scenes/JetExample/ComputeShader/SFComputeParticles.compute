@@ -212,12 +212,10 @@ void PushParticlesOutOfSolidMask(uint3 id : SV_DispatchThreadID)
     int iz = clamp((int)floor(pz / _TorDZ), 0, _TorResZ - 1);
     if (SolidAt(ix, iy, iz) == 0) return;
 
-    float bestScore = -1e20;
-    float3 bestDelta = float3(0.0, 0.0, 0.0);
-    float3 ventHint = float3(_VentTarget.x - px, 0.0, _VentTarget.z - pz);
-    float ventLen = length(ventHint);
-    float3 ventDir = ventLen > 1e-5 ? ventHint / ventLen : float3(1.0, 0.0, 0.0);
-
+    // Чистое анти-вклинивание: ближайшая свободная ячейка по кратчайшему расстоянию.
+    // Без направленного bias и без джиттера — иначе трассеры собираются в линии у стен.
+    float bestD = 1e20;
+    float3 bestCand = float3(px, py, pz);
     for (int r = 1; r <= _PushSearchCells; r++)
     {
         for (int dz = -r; dz <= r; dz++)
@@ -230,37 +228,21 @@ void PushParticlesOutOfSolidMask(uint3 id : SV_DispatchThreadID)
             float wy = ((float)(iy + dy) + 0.5) * _TorDY;
             float wz = ((float)(iz + dz) + 0.5) * _TorDZ;
             float3 cand = float3(wx, wy, wz);
-            float3 delta = cand - float3(px, py, pz);
-            float d = length(delta);
-            float3 dir = d > 1e-6 ? delta / d : float3(0, 0, 0);
-            // К vent, вперёд (+X) и вбок (±Z) — чтобы выходить в проёмы, а не залипать в стену.
-            float score = -d + _VentBiasWeight * dot(dir, ventDir) + 0.35 * abs(dir.z) + 0.2 * max(dir.x, 0.0);
-            if (score > bestScore)
+            float d = length(cand - float3(px, py, pz));
+            if (d < bestD)
             {
-                bestScore = score;
-                bestDelta = delta;
+                bestD = d;
+                bestCand = cand;
             }
         }
-        if (bestScore > -1e19) break;
+        if (bestD < 1e19) break; // первая оболочка со свободной ячейкой — кратчайший выход
     }
 
-    float dBest = length(bestDelta);
-    if (dBest > 1e-6)
+    if (bestD < 1e19)
     {
-        float3 dir = bestDelta / dBest;
-        float maxStep = max(_TorDX, max(_TorDY, _TorDZ)) * 1.35;
-        float step = min(dBest + 0.2 * max(_TorDX, _TorDZ), maxStep);
-        float3 p = float3(px, py, pz) + dir * step;
-
-        // Не кладём все частицы в центр одной свободной ячейки: это и было видно как синяя/красная линия у стен.
-        float tangentJitter = (MazeHash01((uint)i * 1597334677u + 3812015801u) - 0.5)
-            * min(_TorDX, _TorDZ) * 0.35;
-        float3 tangent = normalize(float3(-dir.z, 0.0, dir.x) + 1e-5);
-        p += tangent * tangentJitter;
-
-        _PosX[i] = p.x;
-        _PosY[i] = p.y;
-        _PosZ[i] = p.z;
+        _PosX[i] = bestCand.x;
+        _PosY[i] = bestCand.y;
+        _PosZ[i] = bestCand.z;
     }
 }
 
