@@ -12,6 +12,7 @@ namespace ComputeShaderSF
         private int _sourceDriftKernel;
         private int _ventDriftKernel;
         private int _deflectWallKernel;
+        private int _diffuseKernel;
 
         private ComputeBuffer _x, _y, _z;
         private ComputeBuffer _k1x, _k1y, _k1z;
@@ -57,6 +58,9 @@ namespace ComputeShaderSF
             _deflectWallKernel = -1;
             if (shader.HasKernel("DeflectMazeAtWallParticles"))
                 _deflectWallKernel = shader.FindKernel("DeflectMazeAtWallParticles");
+            _diffuseKernel = -1;
+            if (shader.HasKernel("DiffuseTracers"))
+                _diffuseKernel = shader.FindKernel("DiffuseTracers");
 
             _x = new ComputeBuffer(maxParticles, sizeof(float));
             _y = new ComputeBuffer(maxParticles, sizeof(float));
@@ -303,6 +307,19 @@ namespace ComputeShaderSF
             _shader.SetBuffer(_deflectWallKernel, "_PosY", _y);
             _shader.SetBuffer(_deflectWallKernel, "_PosZ", _z);
             _shader.Dispatch(_deflectWallKernel, (_size + 255) / 256, 1, 1);
+        }
+
+        /// <summary>Изотропное броуновское блуждание σ по 3 осям — диффузия трассеров (σ = sqrt(2 D dt)).</summary>
+        public void DiffuseTracers(float sigma, int seed)
+        {
+            if (_size == 0 || _diffuseKernel < 0 || sigma <= 0f) return;
+            _shader.SetInt("_ParticleCount", _size);
+            _shader.SetFloat("_DiffuseSigma", sigma);
+            _shader.SetInt("_DiffuseSeed", seed);
+            _shader.SetBuffer(_diffuseKernel, "_PosX", _x);
+            _shader.SetBuffer(_diffuseKernel, "_PosY", _y);
+            _shader.SetBuffer(_diffuseKernel, "_PosZ", _z);
+            _shader.Dispatch(_diffuseKernel, (_size + 255) / 256, 1, 1);
         }
 
         public void ReadPositions(float[] outX, float[] outY, float[] outZ)

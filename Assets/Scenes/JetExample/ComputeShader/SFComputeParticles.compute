@@ -8,6 +8,7 @@
 #pragma kernel DriftMazeSourceParticles
 #pragma kernel DriftMazeTowardVent
 #pragma kernel DeflectMazeAtWallParticles
+#pragma kernel DiffuseTracers
 
 RWStructuredBuffer<float> _PosX;
 RWStructuredBuffer<float> _PosY;
@@ -80,6 +81,9 @@ float _VentDriftDT;
 
 float _DeflectStep;
 int _DeflectSearchCells;
+
+float _DiffuseSigma;
+int _DiffuseSeed;
 
 int CellIdxClamped(int raw, int res)
 {
@@ -433,6 +437,33 @@ void DeflectMazeAtWallParticles(uint3 id : SV_DispatchThreadID)
 
     float step = sign((float)bestDz) * min(_DeflectStep, abs((float)bestDz) * _TorDZ * 0.42);
     _PosZ[i] = pz + step;
+}
+
+// Пара независимых нормальных N(0,1) (Бокс–Мюллер).
+float2 GaussPair(uint seed)
+{
+    float u1 = max(1e-6, MazeHash01(seed));
+    float u2 = MazeHash01(seed + 9871u);
+    float r = sqrt(-2.0 * log(u1));
+    float ang = 6.28318530718 * u2;
+    return float2(r * cos(ang), r * sin(ang));
+}
+
+// Изотропная молекулярная/турбулентная диффузия: броуновский шаг σ = sqrt(2 D dt) по 3 осям.
+// Это точное стохастическое (лагранжево) решение ∂ρ/∂t + u·∇ρ = D ∇²ρ — даёт «немного дыма везде»,
+// заполняет застойные зоны и смягчает границы, НЕ навязывая направление (в отличие от старых drift-хаков).
+[numthreads(256, 1, 1)]
+void DiffuseTracers(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _ParticleCount) return;
+
+    uint s = (uint)i * 747796405u + (uint)_DiffuseSeed * 2891336453u;
+    float2 g1 = GaussPair(s);
+    float2 g2 = GaussPair(s + 5417u);
+    _PosX[i] += _DiffuseSigma * g1.x;
+    _PosY[i] += _DiffuseSigma * g1.y;
+    _PosZ[i] += _DiffuseSigma * g2.x;
 }
 
 [numthreads(256, 1, 1)]

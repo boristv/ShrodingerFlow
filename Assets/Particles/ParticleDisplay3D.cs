@@ -58,8 +58,8 @@ namespace ShrodingerFlow.Particles
         float _splatRadiusWorld = 0.07f;
         [SerializeField, Tooltip("Вес одного сплата (чем больше — ярче объём). Доля нормализации считается автоматически.")]
         uint _splatterWeightFixed = 65000;
-        [SerializeField, Tooltip("Сколько частиц в вокселе соответствует «полной» плотности (=1). Меньше — ярче/плотнее дым. НЕ зависит от общего числа частиц — поэтому яркость не плывёт при росте/убыли популяции.")]
-        float _splatNormalizeParticlesPerVoxel = 8f;
+        [SerializeField, Tooltip("Сколько частиц в вокселе соответствует «полной» плотности (=1). Меньше — ярче/плотнее дым, больше — воздушнее. НЕ зависит от общего числа частиц — поэтому яркость не плывёт при росте/убыли популяции.")]
+        float _splatNormalizeParticlesPerVoxel = 12f;
 
         [SerializeField] Light _raymarchSunLight;
 
@@ -83,9 +83,9 @@ namespace ShrodingerFlow.Particles
         [SerializeField, Tooltip("Рисовать стены лабиринта как твёрдые непрозрачные тела (берётся та же маска, что задаёт границу потока).")]
         bool _renderWalls = true;
         [SerializeField, Tooltip("Цвет стен.")]
-        Color _wallColor = new Color(0.20f, 0.23f, 0.30f);
-        [SerializeField, Range(0f, 1f), Tooltip("Базовая подсветка стен (доля цвета вне зависимости от направления на солнце).")]
-        float _wallAmbient = 0.4f;
+        Color _wallColor = new Color(0.30f, 0.34f, 0.42f);
+        [SerializeField, Range(0f, 1f), Tooltip("Базовая подсветка стен (доля цвета вне зависимости от направления на солнце). Выше — теневые грани светлее.")]
+        float _wallAmbient = 0.55f;
 
         [Header("Raymarch — ψ только")]
         [SerializeField, Tooltip("Вычитается из ρ только для режима «Вероятность |ψ|²».")]

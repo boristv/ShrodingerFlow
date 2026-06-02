@@ -197,13 +197,16 @@ MonoBehaviour:
   _mazeVentSuction: {x: 0.5, y: 0, z: 0}
   _mazeWind: {x: 0.5, y: 0, z: 0}
   _mazeBoundaryIters: 4
-  _mazeParticleLifetime: 600
+  _mazeParticleLifetime: 900
+  _mazeSmokeDiffusion: 0.0025
   _mazeRampSteps: 60
   _mazeParticleDispersion: 0
   _mazeDispersionWallBoost: 0
   _mazeVentDrift: 0
   _mazeWallDeflect: 0
   _mazePushSearchCells: 12
+  _mazeDebugMetrics: 1
+  _mazeDebugEverySteps: 120
   _cigaretteBackgroundU: {x: 0.1, y: 0, z: 0}
   _cigaretteJet: {x: 0, y: 1, z: 0}
   _cigaretteGravity: {x: 0, y: 1, z: 0}
@@ -305,7 +308,7 @@ MonoBehaviour:
     type: 3}
   _splatRadiusWorld: 0.07
   _splatterWeightFixed: 80000
-  _splatNormalizeParticlesPerVoxel: 8
+  _splatNormalizeParticlesPerVoxel: 12
   _raymarchSunLight: {fileID: 797636674}
   _raymarchDensityGamma: 0.55
   _raymarchOpticalDensity: 11
@@ -316,8 +319,8 @@ MonoBehaviour:
   _fluidAmbient: {r: 0.1, g: 0.22, b: 0.38, a: 1}
   _fluidSunTint: {r: 0.52, g: 0.78, b: 1, a: 1}
   _renderWalls: 1
-  _wallColor: {r: 0.2, g: 0.23, b: 0.3, a: 1}
-  _wallAmbient: 0.4
+  _wallColor: {r: 0.3, g: 0.34, b: 0.42, a: 1}
+  _wallAmbient: 0.55
   _raymarchDensityOffset: 200
   _raymarchStepSize: 0.02
   _raymarchDebugTintWhenRayHitsBounds: 0
@@ -408,13 +411,13 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 694193781}
   serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 2.55, y: 6.55, z: -4}
+  m_LocalRotation: {x: 0.7071068, y: 0, z: 0, w: 0.7071068}
+  m_LocalPosition: {x: 2.55, y: 10.5, z: 1.6}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+  m_LocalEulerAnglesHint: {x: 90, y: 0, z: 0}
 --- !u!114 &694193785
 MonoBehaviour:
   m_ObjectHideFlags: 0

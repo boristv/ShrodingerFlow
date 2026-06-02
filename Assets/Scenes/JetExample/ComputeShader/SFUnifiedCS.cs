@@ -107,7 +107,9 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
     [Tooltip("Сколько раз за шаг переустанавливать границы (стены/источник/вытяжка) + PressureProject. Больше — жёстче стены, меньше протечки.")]
     [SerializeField, Range(1, 8)] private int _mazeBoundaryIters = 4;
     [Tooltip("Время жизни трассера (шагов). Должно хватать, чтобы доплыть до вытяжки (домен 5 ед. при ветре ~0.5 ≈ 240 шагов). Старые удаляются → популяция постоянна. 0 — без срока.")]
-    [SerializeField, Range(0, 2000)] private int _mazeParticleLifetime = 600;
+    [SerializeField, Range(0, 2000)] private int _mazeParticleLifetime = 900;
+    [Tooltip("Коэффициент диффузии дыма D (физический): броуновский шаг σ=√(2·D·dt) на трассер. Заполняет застойные зоны и смягчает границы — «немного дыма везде». 0 — чистая адвекция.")]
+    [SerializeField] private float _mazeSmokeDiffusion = 0.0025f;
     [Tooltip("Плавный разгон inflow/outflow за N шагов — убирает резкий выброс на старте.")]
     [SerializeField, Range(0, 240)] private int _mazeRampSteps = 60;
     [Tooltip("Турбулентная дисперсия трассеров в плоскости XZ (доли ячейки): рассеивание для поиска смещённых проходов.")]
@@ -791,6 +793,11 @@ public class SFUnifiedCS : SFBase, ISimulationParticleSizeSource, IRaymarchDensi
         SpawnMazeSourceParticles();
         _isf.UpdateVelocities(_vel);
         _particles.CalculateMovement(_vel, clampSampling: true);
+
+        // Диффузия: броуновский шаг σ=√(2 D dt) — физически точное (лагранжево) слагаемое D∇²ρ
+        // уравнения адвекции-диффузии. Заполняет застойные зоны, «немного дыма везде».
+        if (_mazeSmokeDiffusion > 0f)
+            _particles.DiffuseTracers(Mathf.Sqrt(2f * _mazeSmokeDiffusion * dt), iterator);
 
         // Единственная «коррекция» — анти-вклинивание: трассер, попавший внутрь стены
         // (из-за интерполяции у кромки), возвращается в ближайшую свободную ячейку. Без

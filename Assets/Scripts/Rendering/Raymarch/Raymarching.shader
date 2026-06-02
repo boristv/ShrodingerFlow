@@ -205,7 +205,12 @@ Shader "Fluid/Raymarching"
                         {
                             float3 n = WallNormal(uvw);
                             float ndl = max(0.0, dot(n, dirToSun));
-                            wallShaded = _WallColor.rgb * (_WallAmbient + (1.0 - _WallAmbient) * ndl);
+                            // Полусферический ambient: грани, смотрящие вверх (к небу), светлее нижних —
+                            // теневые стороны не проваливаются в чёрный. Плюс ламбертов вклад солнца.
+                            float hemi = 0.5 + 0.5 * n.y;
+                            float3 ambient = _WallColor.rgb * _WallAmbient * (0.5 + 0.5 * hemi);
+                            float3 diffuse = _WallColor.rgb * (1.0 - _WallAmbient) * ndl;
+                            wallShaded = ambient + diffuse;
                             wallHit = true;
                             break;
                         }
