@@ -39,12 +39,14 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
     [SerializeField] private Vector3 _obstacleHalf = new Vector3(0.4f, 0.9f, 0.4f);
     [Tooltip("Рисовать внешние стены в раймарче. Обычно выкл: они закрывают обзор. Границей потока остаются в любом случае.")]
     [SerializeField] private bool _renderOuterWalls;
+    [Tooltip("Открыть грани ±X (направление продувки): сквозной поток вместо запечатанной коробки. В закрытом объёме ISF поток застаивается (ветер гасится давлением). Вкл = проветриваемая комната/аэродинам. труба.")]
+    [SerializeField] private bool _openFlowFaces = true;
 
-    [Header("Поток / ветер (объёмная продувка через состояние)")]
-    [Tooltip("Однородная сила-«ветер» (фаза на обе компоненты ψ): создаёт тягу вход→вытяжка.")]
-    [SerializeField] private Vector3 _wind = new Vector3(0.4f, 0f, 0f);
+    [Header("Поток (зона впуска = струя, непрерывная подкачка)")]
+    [Tooltip("Зона впуска: задаёт скорость +X каждый шаг (Дирихле, бегущая фаза -ω·t). Локализованная струя (не во всю стену) даёт объёмный 3D-плюм с вертикальным растеканием, но крупнее точечной → поддерживает поток. Смести центр по Y для асимметрии/вертикали.")]
+    [SerializeField] private Vector3 _inflowCenter = new Vector3(0.2f, 1.0f, 2.0f);
+    [SerializeField] private Vector3 _inflowHalf = new Vector3(0.35f, 0.6f, 0.8f);
     [SerializeField, Range(1, 8)] private int _boundaryIters = 4;
-    [SerializeField, Range(0, 240)] private int _rampSteps = 60;
 
     [Header("Плотностно-фазовое поле α")]
     [Tooltip("Целевое α в источнике (концентрация дыма на входе).")]
@@ -54,6 +56,14 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
     [Tooltip("Регуляризующая диффузия D_α (мягкость интерфейса, заполнение застойных зон).")]
     [SerializeField] private float _alphaDiffusion = 0.0015f;
     [SerializeField, Range(0, 4)] private int _alphaDiffuseIters = 1;
+
+    [Header("Трассеры — опциональный A/B-режим (для Billboard/Shaded)")]
+    [Tooltip("Считать частицы-трассеры параллельно α. Несутся ТОЙ ЖЕ скоростью ISF+LES. Не влияют на α-поле. Видны в режимах Billboard/Shaded.")]
+    [SerializeField] private bool _spawnTracers = true;
+    [SerializeField, Range(0, 1000)] private int _tracerPerStep = 80;
+    [SerializeField, Range(0, 2000)] private int _tracerLifetime = 600;
+    [Tooltip("Диффузия трассеров D (0 — чистая адвекция по характеристикам: контраст с α).")]
+    [SerializeField] private float _tracerDiffusion;
 
     [Header("Управление")]
     [SerializeField] private bool _useLES = true;
@@ -69,8 +79,20 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
     private CSVelocity _vel;
     private CSScalarField _alpha;
     private ComputeBuffer _solidMask, _sourceMask, _sinkMask;
+    private ComputeBuffer _inflowMask;      // широкое −X сечение: задаёт скорость впуска (Дирихле)
     private ComputeBuffer _visualSolidMask; // только то, что рисуем (мебель; внешние стены опц.)
     private bool _initialized;
+
+    // Параметры струи входа (бегущая фаза, как в сценарии Jet).
+    private float _kInX, _kInY, _kInZ, _omega;
+
+    // Трассеры (A/B), полностью независимы от α.
+    private CSParticles _particles;
+    private ParticleGpuBuffers _particleBuffers;
+    private Vector3[] _renderPos, _renderVel, _prevPos, _displayVelSmooth;
+    private float[] _pxArr, _pyArr, _pzArr, _age;
+    private int _particlesCount, _maxParticles;
+    private const float DisplayVelBlend = 0.32f;
 
     private void Start()
     {
@@ -79,11 +101,37 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         _vel = new CSVelocity(_isf.resX, _isf.resY, _isf.resZ);
         _alpha = new CSScalarField(_scalarShader, _isf.resX, _isf.resY, _isf.resZ, _isf.dx, _isf.dy, _isf.dz);
 
+        _kInX = _inletVelocity.x / hbar;
+        _kInY = _inletVelocity.y / hbar;
+        _kInZ = _inletVelocity.z / hbar;
+        _omega = _inletVelocity.sqrMagnitude / (2f * hbar);
+
         BuildMasks();
-        InitPsiPlaneWave(_wind * 0.5f);
+        InitPsiPlaneWave(_inletVelocity * 0.2f);
         RunInitBoundary(8);
 
+        InitTracers();
+
         _initialized = true;
+    }
+
+    private void InitTracers()
+    {
+        _particleBuffers = GetComponent<ParticleGpuBuffers>();
+        if (!_spawnTracers || _particlesShader == null) return;
+
+        _maxParticles = Mathf.Max(256, _tracerPerStep * 800);
+        _particles = new CSParticles();
+        _particles.Init(_particlesShader, _maxParticles, _isf);
+        _particleBuffers?.EnsureCapacity(_maxParticles);
+        _renderPos = new Vector3[_maxParticles];
+        _renderVel = new Vector3[_maxParticles];
+        _prevPos = new Vector3[_maxParticles];
+        _displayVelSmooth = new Vector3[_maxParticles];
+        _pxArr = new float[_maxParticles];
+        _pyArr = new float[_maxParticles];
+        _pzArr = new float[_maxParticles];
+        _age = new float[_maxParticles];
     }
 
     private void Update()
@@ -94,14 +142,17 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
             iterator++;
             Step();
         }
+        UpdateTracerDisplay();
     }
 
     private void OnDestroy()
     {
         _solidMask?.Release();
         _visualSolidMask?.Release();
+        _inflowMask?.Release();
         _sourceMask?.Release();
         _sinkMask?.Release();
+        _particles?.Dispose();
         _alpha?.Dispose();
         _vel?.Dispose();
         _isf?.Dispose();
@@ -114,18 +165,13 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         _isf.kinematicViscosity = _kinematicViscosity;
         _isf.UpdateSpace(_useLES, null);
 
-        float ramp = _rampSteps > 0 ? Mathf.Clamp01((float)iterator / _rampSteps) : 1f;
-        ramp = ramp * ramp * (3f - 2f * ramp);
-
-        if (_wind.sqrMagnitude > 1e-8f)
-            _isf.ApplyUniformForce(_wind * ramp);
-
-        float invH = ramp / hbar;
+        // Непрерывная струя: бегущая фаза -ω·t на входе (постоянная подкачка импульса, как сопло в Jet).
+        float invH = 1f / hbar;
+        float jetPhase = -_omega * dt * iterator;
         for (int b = 0; b < _boundaryIters; b++)
         {
             _isf.ApplyJetBoundary(_solidMask, 0f, 0f, 0f, 0f);
-            _isf.ApplyJetBoundary(_sourceMask,
-                _inletVelocity.x * invH, _inletVelocity.y * invH, _inletVelocity.z * invH, 0f);
+            _isf.ApplyJetBoundary(_inflowMask, _kInX, _kInY, _kInZ, jetPhase);
             _isf.ApplyJetBoundary(_sinkMask,
                 _ventVelocity.x * invH, _ventVelocity.y * invH, _ventVelocity.z * invH, 0f);
             _isf.PressureProject();
@@ -136,17 +182,96 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         _alpha.Step(_vel, _solidMask, _sourceMask, _sinkMask,
             dt, _alphaDiffusion, _alphaSourceValue, _alphaSinkFactor, _alphaDiffuseIters);
 
+        StepTracers();
         LogMetrics();
+    }
+
+    // Трассеры несутся ТОЙ ЖЕ скоростью _vel; на α не влияют (отдельная подсистема для A/B и Billboard/Shaded).
+    private void StepTracers()
+    {
+        if (!_spawnTracers || _particles == null) return;
+        SpawnTracers();
+        _particles.CalculateMovement(_vel, clampSampling: true);
+        if (_tracerDiffusion > 0f)
+            _particles.DiffuseTracers(Mathf.Sqrt(2f * _tracerDiffusion * dt), iterator);
+        _particles.PushOutOfSolidMask(_solidMask, 12, _ventCenter, 0f);
+        _particles.ClampPositionsToVolume(vol_size[0], vol_size[1], vol_size[2]);
+        CompactTracers();
+    }
+
+    private void SpawnTracers()
+    {
+        int n = _tracerPerStep;
+        if (n <= 0) return;
+        var xx = new float[n];
+        var yy = new float[n];
+        var zz = new float[n];
+        for (int i = 0; i < n; i++)
+        {
+            xx[i] = Random.Range(_inletCenter.x - _inletHalf.x, _inletCenter.x + _inletHalf.x);
+            yy[i] = Random.Range(_inletCenter.y - _inletHalf.y, _inletCenter.y + _inletHalf.y);
+            zz[i] = Random.Range(_inletCenter.z - _inletHalf.z, _inletCenter.z + _inletHalf.z);
+        }
+        int before = _particles.Size;
+        _particles.AddParticles(xx, yy, zz, n);
+        _particlesCount = _particles.Size;
+        for (int i = before; i < _particlesCount; i++)
+            _age[i] = 0f;
+    }
+
+    private void CompactTracers()
+    {
+        if (_particlesCount == 0) return;
+        _particles.ReadPositions(_pxArr, _pyArr, _pzArr);
+        Vector3 vmin = _ventCenter - _ventHalf, vmax = _ventCenter + _ventHalf;
+        for (int i = 0; i < _particlesCount; i++)
+        {
+            _age[i] += 1f;
+            bool tooOld = _tracerLifetime > 0 && _age[i] > _tracerLifetime;
+            bool inVent = _pxArr[i] >= vmin.x && _pxArr[i] <= vmax.x
+                       && _pyArr[i] >= vmin.y && _pyArr[i] <= vmax.y
+                       && _pzArr[i] >= vmin.z && _pzArr[i] <= vmax.z;
+            if (tooOld || inVent)
+                _pxArr[i] = _pyArr[i] = _pzArr[i] = -1f;
+        }
+        _particles.WritePositions(_pxArr, _pyArr, _pzArr, _particlesCount);
+        _particles.CompactParticles(_pxArr, _pyArr, _pzArr,
+            vol_size[0], vol_size[1], vol_size[2], _prevPos, _displayVelSmooth, _age);
+        _particlesCount = _particles.Size;
+    }
+
+    private void UpdateTracerDisplay()
+    {
+        if (!_spawnTracers || _particles == null || _particlesCount == 0 || _particleBuffers == null) return;
+        _particles.ReadPositions(_pxArr, _pyArr, _pzArr);
+        var offset = transform.position;
+        float maxX = vol_size[0], maxY = vol_size[1], maxZ = vol_size[2];
+        float velThr = maxX * maxX + maxY * maxY + maxZ * maxZ;
+        int visible = 0;
+        for (int i = 0; i < _particlesCount; i++)
+        {
+            float px = _pxArr[i], py = _pyArr[i], pz = _pzArr[i];
+            var pos = new Vector3(px, py, pz) + offset;
+            var last = _prevPos[i];
+            _prevPos[i] = pos;
+            var vel = pos - last;
+            if (vel.sqrMagnitude > velThr) vel = Vector3.zero;
+            _displayVelSmooth[i] = Vector3.Lerp(_displayVelSmooth[i], vel, DisplayVelBlend);
+            if (px < 0f || px > maxX || py < 0f || py > maxY || pz < 0f || pz > maxZ)
+                continue;
+            _renderPos[visible] = pos;
+            _renderVel[visible] = _displayVelSmooth[i];
+            visible++;
+        }
+        _particleBuffers.Upload(_renderPos, _renderVel, visible);
     }
 
     private void RunInitBoundary(int iterations)
     {
-        float invH = 1f / hbar;
         for (int i = 0; i < iterations; i++)
         {
             _isf.ApplyJetBoundary(_solidMask, 0f, 0f, 0f, 0f);
-            _isf.ApplyJetBoundary(_sourceMask,
-                _inletVelocity.x * invH, _inletVelocity.y * invH, _inletVelocity.z * invH, 0f);
+            _isf.ApplyJetBoundary(_inflowMask, _kInX, _kInY, _kInZ, 0f);
             _isf.PressureProject();
         }
     }
@@ -183,9 +308,13 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
     private bool IsOuterWall(float px, float py, float pz)
     {
         float m = _wallMargin;
-        return px < m || px > vol_size[0] - m
-            || py < m || py > vol_size[1] - m
-            || pz < m || pz > vol_size[2] - m;
+        // Пол/потолок (Y) и боковые стены (Z) — всегда. Грани ±X (продувка) — опционально открыты.
+        bool yz = py < m || py > vol_size[1] - m
+               || pz < m || pz > vol_size[2] - m;
+        if (_openFlowFaces)
+            return yz;
+        bool x = px < m || px > vol_size[0] - m;
+        return x || yz;
     }
 
     private bool IsSolidAt(float px, float py, float pz)
@@ -204,6 +333,7 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         var visual = new int[num];
         var src = new int[num];
         var sink = new int[num];
+        var inflow = new int[num];
         for (int i = 0; i < num; i++)
         {
             float px = _isf.pxCPU[i], py = _isf.pyCPU[i], pz = _isf.pzCPU[i];
@@ -215,11 +345,14 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
             visual[i] = isSolid && (_renderOuterWalls || !IsOuterWall(px, py, pz)) ? 1 : 0;
             src[i] = inSrc ? 1 : 0;
             sink[i] = inSink ? 1 : 0;
+            // Впуск: локализованная струя (зона) — задаёт скорость +X, держит поток, остаётся 3D.
+            inflow[i] = (InAabb(px, py, pz, _inflowCenter, _inflowHalf) && !isSolid && !inSink) ? 1 : 0;
         }
         _solidMask = new ComputeBuffer(num, sizeof(int)); _solidMask.SetData(solid);
         _visualSolidMask = new ComputeBuffer(num, sizeof(int)); _visualSolidMask.SetData(visual);
         _sourceMask = new ComputeBuffer(num, sizeof(int)); _sourceMask.SetData(src);
         _sinkMask = new ComputeBuffer(num, sizeof(int)); _sinkMask.SetData(sink);
+        _inflowMask = new ComputeBuffer(num, sizeof(int)); _inflowMask.SetData(inflow);
     }
 
     #endregion
@@ -230,7 +363,8 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
     {
         if (!_debugMetrics || _debugEverySteps <= 0 || iterator % _debugEverySteps != 0)
             return;
-        var a = new float[_isf.num];
+        int n = _isf.num;
+        var a = new float[n];
         _alpha.Alpha.GetData(a);
         double sum = 0; float mx = 0; int occupied = 0;
         for (int i = 0; i < a.Length; i++)
@@ -239,7 +373,18 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
             if (a[i] > mx) mx = a[i];
             if (a[i] > 0.05f) occupied++;
         }
-        Debug.Log($"[Hybrid3D] step={iterator} alphaSum={sum:F1} alphaMax={mx:F3} occupied(>0.05)={occupied}/{a.Length} ({100.0 * occupied / a.Length:F1}%)");
+
+        // Скорость: затухает поле после стартового плюма или держится? (ключевая диагностика)
+        var vx = new float[n]; var vy = new float[n]; var vz = new float[n];
+        _vel.vx.GetData(vx); _vel.vy.GetData(vy); _vel.vz.GetData(vz);
+        double uSum = 0; float uMax = 0;
+        for (int i = 0; i < n; i++)
+        {
+            float m = Mathf.Sqrt(vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i]);
+            uSum += m; if (m > uMax) uMax = m;
+        }
+
+        Debug.Log($"[Hybrid3D] step={iterator} alphaSum={sum:F1} alphaMax={mx:F3} occupied(>0.05)={occupied}/{n} ({100.0 * occupied / n:F1}%) |u|mean={uSum / n:F3} |u|max={uMax:F3}");
     }
 
     #endregion
@@ -279,6 +424,8 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         var vol = new Vector3(vol_size[0], vol_size[1], vol_size[2]);
         Gizmos.color = Color.yellow;
         Gizmos.DrawWireCube(o + vol / 2f, vol);
+        Gizmos.color = new Color(0.9f, 0.9f, 0.2f, 0.5f);
+        Gizmos.DrawWireCube(o + _inflowCenter, _inflowHalf * 2f);
         Gizmos.color = new Color(1f, 0.55f, 0.1f, 0.9f);
         Gizmos.DrawWireCube(o + _inletCenter, _inletHalf * 2f);
         Gizmos.color = new Color(0.2f, 0.85f, 0.35f, 0.9f);
