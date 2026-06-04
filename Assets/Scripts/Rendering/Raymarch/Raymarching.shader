@@ -224,31 +224,40 @@ Shader "Fluid/Raymarching"
                         if (rho < 0.000015)
                             rho = 0;
 
-                        float sigma = rho * max(_OpticalDensity, 0);
+                        // Единый коэффициент экстинкции σ_t (без отдельного множителя поглощения —
+                        // иначе эмиссия > поглощения, альбедо>1, среда «светится» сверх энергии).
+                        float sigmaT = rho * max(_OpticalDensity, 0) * (0.5 + max(_Absorption, 0));
 
                         float sunScatter = pow(max(0.0, dot(dirToSun, -rayDir)), max(_SunPhasePower, 0.01));
                         float3 Li = _FluidAmbient * _ScatterAmbient + _FluidSunTint * (_ScatterSun * sunScatter);
-                        float3 emissive = sigma * Li;
 
-                        scattered += transmittance * emissive * step;
-                        transmittance *= exp(-sigma * max(_Absorption, 0) * step);
+                        // Энергосохраняющее однократное рассеяние: за шаг взаимодействует доля (1−Tstep)
+                        // приходящего света. На краю σ_t→0 ⇒ (1−Tstep)→0 ⇒ нет «лишнего» свечения каймы.
+                        float Tstep = exp(-sigmaT * step);
+                        scattered += transmittance * (1.0 - Tstep) * Li;
+                        transmittance *= Tstep;
                     }
 
                     distAlong += step;
                     iter++;
                 }
 
-                // Нет ни дыма, ни стены — отдаём фон без изменений (совпадает с ранним выходом → нет каймы).
-                if (!wallHit && maxRho < 0.00002)
+                // Непрозрачность дыма вдоль луча.
+                float alpha = saturate(1.0 - transmittance);
+
+                // Нет ни дыма, ни стены — фон без изменений (совпадает с ранним выходом → нет каймы).
+                if (!wallHit && alpha < 0.002)
                     return half4(bgScene, 1);
 
-                // «Фон» для луча: стена (если попали) перекрывает сцену; дым перед стеной её затеняет.
+                // «Фон» для луча: стена (если попали) перекрывает сцену; дым перед ней её затеняет.
                 float3 background = wallHit ? wallShaded : bgScene;
 
-                // ACES — ТОЛЬКО к свету дыма. Если тонмапить весь кадр (вместе с фоном), то в кайме
-                // вокруг дыма (transmittance≈1, дыма почти нет) фон тоже уходит в ACES и сереет,
-                // а снаружи возвращается сырой bgScene → виден серый блочный ореол по краю сплата.
-                float3 rgb = ACESFilm(scattered) + background * saturate(transmittance);
+                // Собственный цвет дыма (накопленный свет, нормированный на α), тонмапим ТОЛЬКО его.
+                // Альфа-композитинг lerp(фон, дым, α): на краю α→0 ⇒ ровно фон (нет ни серой каймы,
+                // ни засветки), внутри ⇒ цвет дыма. Фон не складывается с дымом → не выбивает в белый.
+                float3 smokeCol = alpha > 1e-4 ? scattered / alpha : float3(0, 0, 0);
+                smokeCol = ACESFilm(smokeCol);
+                float3 rgb = lerp(background, smokeCol, alpha);
                 return half4(rgb, 1);
             }
             ENDHLSL
