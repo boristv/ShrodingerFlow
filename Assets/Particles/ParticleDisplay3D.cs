@@ -26,7 +26,9 @@ namespace ShrodingerFlow.Particles
             [InspectorName("Вероятность |ψ|² (сетка симуляции)")]
             PsiProbabilityDensity,
             [InspectorName("Частицы (сплаты по позициям)")]
-            ParticleSplats
+            ParticleSplats,
+            [InspectorName("Плотностно-фазовое поле α (гибрид ISF)")]
+            AlphaField
         }
 
         [Header("Settings")]
@@ -118,6 +120,7 @@ namespace ShrodingerFlow.Particles
         Material _raymarchMat;
         RenderTexture _densityVolumeRt;
         IRaymarchDensitySource _psiDensitySource;
+        IRaymarchScalarFieldSource _scalarFieldSource;
         IRaymarchSolidMaskSource _solidMaskSource;
         RenderTexture _wallVolumeRt;
         int _wallVolRx = -1;
@@ -151,6 +154,7 @@ namespace ShrodingerFlow.Particles
             if (buffers == null)
                 buffers = GetComponent<ParticleGpuBuffers>();
             _psiDensitySource = GetComponent<IRaymarchDensitySource>();
+            _scalarFieldSource = GetComponent<IRaymarchScalarFieldSource>();
             _solidMaskSource = GetComponent<IRaymarchSolidMaskSource>();
         }
 
@@ -257,21 +261,51 @@ namespace ShrodingerFlow.Particles
             if (_raymarchMat == null || shaderRaymarch == null)
                 return false;
 
-            if (_psiDensitySource == null)
-                _psiDensitySource = GetComponent<IRaymarchDensitySource>();
-            if (_psiDensitySource == null ||
-                !_psiDensitySource.TryGetPsiVolume(out ComputeBuffer p1, out ComputeBuffer p2,
-                    out Vector3 volumeMinWorld, out Vector3 volumeSizeWorld,
-                    out int rx, out int ry, out int rz))
-                return false;
-
+            bool alphaMode = raymarchDensitySource == RaymarchDensitySource.AlphaField;
             bool splats = raymarchDensitySource == RaymarchDensitySource.ParticleSplats;
+
+            Vector3 volumeMinWorld, volumeSizeWorld;
+            int rx, ry, rz;
+            ComputeBuffer p1 = null, p2 = null, alphaBuf = null;
+
+            if (alphaMode)
+            {
+                if (_scalarFieldSource == null)
+                    _scalarFieldSource = GetComponent<IRaymarchScalarFieldSource>();
+                if (_scalarFieldSource == null ||
+                    !_scalarFieldSource.TryGetScalarField(out alphaBuf,
+                        out volumeMinWorld, out volumeSizeWorld, out rx, out ry, out rz) ||
+                    alphaBuf == null || psiDensityToVolume == null)
+                    return false;
+            }
+            else
+            {
+                if (_psiDensitySource == null)
+                    _psiDensitySource = GetComponent<IRaymarchDensitySource>();
+                if (_psiDensitySource == null ||
+                    !_psiDensitySource.TryGetPsiVolume(out p1, out p2,
+                        out volumeMinWorld, out volumeSizeWorld, out rx, out ry, out rz))
+                    return false;
+            }
+
             if (!splats)
                 ReleaseSplatterScratch();
 
             EnsureDensityVolume(rx, ry, rz);
 
-            if (splats)
+            int gx = (rx + 7) / 8, gy = (ry + 7) / 8, gz = (rz + 7) / 8;
+
+            if (alphaMode)
+            {
+                int k = psiDensityToVolume.FindKernel("ScalarToDensity");
+                psiDensityToVolume.SetBuffer(k, "ScalarField", alphaBuf);
+                psiDensityToVolume.SetTexture(k, "DensityOut", _densityVolumeRt);
+                psiDensityToVolume.SetInt("_ResX", rx);
+                psiDensityToVolume.SetInt("_ResY", ry);
+                psiDensityToVolume.SetInt("_ResZ", rz);
+                psiDensityToVolume.Dispatch(k, gx, gy, gz);
+            }
+            else if (splats)
             {
                 if (particlesToDensityVolume == null || buffers == null || buffers.PositionBuffer == null ||
                     buffers.ActiveCount <= 0)
@@ -291,15 +325,14 @@ namespace ShrodingerFlow.Particles
                 psiDensityToVolume.SetInt("_ResX", rx);
                 psiDensityToVolume.SetInt("_ResY", ry);
                 psiDensityToVolume.SetInt("_ResZ", rz);
-                int gx = (rx + 7) / 8;
-                int gy = (ry + 7) / 8;
-                int gz = (rz + 7) / 8;
                 psiDensityToVolume.Dispatch(k, gx, gy, gz);
             }
 
             bool walls = TryBuildWallVolume(rx, ry, rz);
 
-            ApplyRaymarchUniforms(cam, volumeMinWorld, volumeSizeWorld, splats, walls, rx, ry, rz);
+            // α-поле и сплаты трактуются как «полевая» плотность (offset 0, полная оптическая толщина).
+            bool fieldLike = splats || alphaMode;
+            ApplyRaymarchUniforms(cam, volumeMinWorld, volumeSizeWorld, fieldLike, walls, rx, ry, rz);
             return true;
         }
 

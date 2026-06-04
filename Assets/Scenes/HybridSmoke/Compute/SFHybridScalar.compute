@@ -1,0 +1,163 @@
+// Перенос плотностно-фазового поля α (гибридная волново-плотностная модель ISF).
+// ∂α/∂t + ũ·∇α = D_α ∇²α, где ũ — скорость, восстановленная из ψ и стабилизированная LES.
+// α — поле СОСТОЯНИЯ среды (носитель плотности дыма / интерфейса / оптики), а не маркеры-частицы.
+// Раскладка индекса как у ISF: idx = i*ResY*ResZ + j*ResZ + k.
+#pragma kernel ClearScalar
+#pragma kernel AdvectScalar
+#pragma kernel DiffuseScalar
+#pragma kernel ScalarBoundary
+
+RWStructuredBuffer<float> _AlphaIn;    // источник чтения (advect/diffuse)
+RWStructuredBuffer<float> _AlphaOut;   // запись результата
+RWStructuredBuffer<float> _Alpha;      // ин-плейс (граничные условия)
+
+StructuredBuffer<float> _VX;           // скорость ũ по осям (на ячейку)
+StructuredBuffer<float> _VY;
+StructuredBuffer<float> _VZ;
+
+StructuredBuffer<int> _SolidMask;      // 1 = твёрдое (стена/мебель)
+StructuredBuffer<int> _SourceMask;     // 1 = источник дыма
+StructuredBuffer<int> _SinkMask;       // 1 = вытяжка (сток)
+
+int _ResX;
+int _ResY;
+int _ResZ;
+int _Num;
+float _DX;
+float _DY;
+float _DZ;
+float _DT;
+float _DAlpha;       // коэффициент регуляризующей диффузии D_α
+float _SourceValue;  // целевое α в источнике
+float _SinkFactor;   // множитель α в стоке (<1)
+
+int Idx(int i, int j, int k)
+{
+    return i * _ResY * _ResZ + j * _ResZ + k;
+}
+
+int ClampI(int v, int n)
+{
+    return clamp(v, 0, n - 1);
+}
+
+// Трилинейная выборка _AlphaIn в дробных координатах ячейки (с зажимом к границе домена).
+float SampleAlphaTrilinear(float3 c)
+{
+    float cx = clamp(c.x, 0.0, (float)_ResX - 1.0);
+    float cy = clamp(c.y, 0.0, (float)_ResY - 1.0);
+    float cz = clamp(c.z, 0.0, (float)_ResZ - 1.0);
+
+    int i0 = (int)floor(cx); int i1 = ClampI(i0 + 1, _ResX);
+    int j0 = (int)floor(cy); int j1 = ClampI(j0 + 1, _ResY);
+    int k0 = (int)floor(cz); int k1 = ClampI(k0 + 1, _ResZ);
+    i0 = ClampI(i0, _ResX); j0 = ClampI(j0, _ResY); k0 = ClampI(k0, _ResZ);
+
+    float fx = cx - floor(cx);
+    float fy = cy - floor(cy);
+    float fz = cz - floor(cz);
+
+    float a000 = _AlphaIn[Idx(i0, j0, k0)];
+    float a100 = _AlphaIn[Idx(i1, j0, k0)];
+    float a010 = _AlphaIn[Idx(i0, j1, k0)];
+    float a110 = _AlphaIn[Idx(i1, j1, k0)];
+    float a001 = _AlphaIn[Idx(i0, j0, k1)];
+    float a101 = _AlphaIn[Idx(i1, j0, k1)];
+    float a011 = _AlphaIn[Idx(i0, j1, k1)];
+    float a111 = _AlphaIn[Idx(i1, j1, k1)];
+
+    float a00 = lerp(a000, a100, fx);
+    float a10 = lerp(a010, a110, fx);
+    float a01 = lerp(a001, a101, fx);
+    float a11 = lerp(a011, a111, fx);
+    float a0 = lerp(a00, a10, fy);
+    float a1 = lerp(a01, a11, fy);
+    return lerp(a0, a1, fz);
+}
+
+[numthreads(256, 1, 1)]
+void ClearScalar(uint3 id : SV_DispatchThreadID)
+{
+    int n = (int)id.x;
+    if (n >= _Num) return;
+    _Alpha[n] = 0.0;
+}
+
+// Полулагранжев перенос: обратная трассировка на ũ·dt и трилинейная выборка α.
+[numthreads(256, 1, 1)]
+void AdvectScalar(uint3 id : SV_DispatchThreadID)
+{
+    int n = (int)id.x;
+    if (n >= _Num) return;
+
+    if (_SolidMask[n] != 0)
+    {
+        _AlphaOut[n] = 0.0;
+        return;
+    }
+
+    int i = (n / _ResZ) / _ResY;
+    int j = (n / _ResZ) % _ResY;
+    int k = n % _ResZ;
+
+    float u = _VX[n];
+    float v = _VY[n];
+    float w = _VZ[n];
+
+    float3 back = float3((float)i - u * _DT / _DX,
+                         (float)j - v * _DT / _DY,
+                         (float)k - w * _DT / _DZ);
+    _AlphaOut[n] = SampleAlphaTrilinear(back);
+}
+
+// Явный шаг диффузии: α_out = α_in + D_α·dt·∇²α (7-точечный лапласиан, зажим у границ/стен).
+[numthreads(256, 1, 1)]
+void DiffuseScalar(uint3 id : SV_DispatchThreadID)
+{
+    int n = (int)id.x;
+    if (n >= _Num) return;
+
+    if (_SolidMask[n] != 0)
+    {
+        _AlphaOut[n] = 0.0;
+        return;
+    }
+
+    int i = (n / _ResZ) / _ResY;
+    int j = (n / _ResZ) % _ResY;
+    int k = n % _ResZ;
+
+    float c = _AlphaIn[n];
+    float xm = _AlphaIn[Idx(ClampI(i - 1, _ResX), j, k)];
+    float xp = _AlphaIn[Idx(ClampI(i + 1, _ResX), j, k)];
+    float ym = _AlphaIn[Idx(i, ClampI(j - 1, _ResY), k)];
+    float yp = _AlphaIn[Idx(i, ClampI(j + 1, _ResY), k)];
+    float zm = _AlphaIn[Idx(i, j, ClampI(k - 1, _ResZ))];
+    float zp = _AlphaIn[Idx(i, j, ClampI(k + 1, _ResZ))];
+
+    float lap = (xm + xp - 2.0 * c) / (_DX * _DX)
+              + (ym + yp - 2.0 * c) / (_DY * _DY)
+              + (zm + zp - 2.0 * c) / (_DZ * _DZ);
+
+    _AlphaOut[n] = c + _DAlpha * _DT * lap;
+}
+
+// Граничные условия для α по единым маскам: источник пополняет α, сток откачивает, стена обнуляет.
+[numthreads(256, 1, 1)]
+void ScalarBoundary(uint3 id : SV_DispatchThreadID)
+{
+    int n = (int)id.x;
+    if (n >= _Num) return;
+
+    if (_SolidMask[n] != 0)
+    {
+        _Alpha[n] = 0.0;
+        return;
+    }
+    if (_SourceMask[n] != 0)
+        _Alpha[n] = max(_Alpha[n], _SourceValue);
+    if (_SinkMask[n] != 0)
+        _Alpha[n] = _Alpha[n] * _SinkFactor;
+
+    _Alpha[n] = saturate(_Alpha[n]);
+}

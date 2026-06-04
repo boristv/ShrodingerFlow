@@ -1,9 +1,11 @@
 #pragma kernel PsiToDensity
 #pragma kernel MaskToDensity
+#pragma kernel ScalarToDensity
 
 StructuredBuffer<float2> Psi1;
 StructuredBuffer<float2> Psi2;
 StructuredBuffer<int> SolidMask;
+StructuredBuffer<float> ScalarField;
 RWTexture3D<float4> DensityOut;
 
 uint _ResX;
@@ -32,5 +34,17 @@ void MaskToDensity(uint3 id : SV_DispatchThreadID)
 
     uint idx = id.x * _ResY * _ResZ + id.y * _ResZ + id.z;
     float v = SolidMask[idx] != 0 ? 1.0 : 0.0;
+    DensityOut[id] = float4(v, v, v, 1.0);
+}
+
+// Плотностно-фазовое поле α (буфер float, поле состояния) → объём плотности для раймарча.
+[numthreads(8, 8, 8)]
+void ScalarToDensity(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _ResX || id.y >= _ResY || id.z >= _ResZ)
+        return;
+
+    uint idx = id.x * _ResY * _ResZ + id.y * _ResZ + id.z;
+    float v = ScalarField[idx];
     DensityOut[id] = float4(v, v, v, 1.0);
 }
