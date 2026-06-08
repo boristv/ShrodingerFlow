@@ -7,11 +7,26 @@
 #pragma kernel DiffuseScalar
 #pragma kernel ScalarBoundary
 #pragma kernel BuoyancyPotential
+#pragma kernel VorticityMag
+#pragma kernel VorticityConfine
+#pragma kernel CopyVel
+#pragma kernel MacCormackCombine
 
 RWStructuredBuffer<float> _AlphaIn;    // источник чтения (advect/diffuse)
 RWStructuredBuffer<float> _AlphaOut;   // запись результата
-RWStructuredBuffer<float> _Alpha;      // ин-плейс (граничные условия)
+RWStructuredBuffer<float> _Alpha;      // ин-плейс (граничные условия / результат MacCormack)
+RWStructuredBuffer<float> _MBack;      // обратно-перенесённое поле (MacCormack)
 RWStructuredBuffer<float> _BuoyOut;    // потенциал плавучести (вертикальный интеграл α)
+
+// Vorticity confinement (на транспортной скорости ũ).
+RWStructuredBuffer<float> _VelX;
+RWStructuredBuffer<float> _VelY;
+RWStructuredBuffer<float> _VelZ;
+RWStructuredBuffer<float> _Wmag;       // |ω|
+RWStructuredBuffer<float> _OX;
+RWStructuredBuffer<float> _OY;
+RWStructuredBuffer<float> _OZ;
+float _Eps;                            // сила confinement × шаг сетки
 
 StructuredBuffer<float> _VX;           // скорость ũ по осям (на ячейку)
 StructuredBuffer<float> _VY;
@@ -183,4 +198,87 @@ void BuoyancyPotential(uint3 id : SV_DispatchThreadID)
         acc += _Alpha[n] * _DY;
         _BuoyOut[n] = acc;
     }
+}
+
+// Завихренность ω = ∇×ũ в ячейке (центральные разности, зажим у границ).
+float3 VortAt(int i, int j, int k)
+{
+    float dWdy = (_VelZ[Idx(i, ClampI(j + 1, _ResY), k)] - _VelZ[Idx(i, ClampI(j - 1, _ResY), k)]) / (2.0 * _DY);
+    float dVdz = (_VelY[Idx(i, j, ClampI(k + 1, _ResZ))] - _VelY[Idx(i, j, ClampI(k - 1, _ResZ))]) / (2.0 * _DZ);
+    float dUdz = (_VelX[Idx(i, j, ClampI(k + 1, _ResZ))] - _VelX[Idx(i, j, ClampI(k - 1, _ResZ))]) / (2.0 * _DZ);
+    float dWdx = (_VelZ[Idx(ClampI(i + 1, _ResX), j, k)] - _VelZ[Idx(ClampI(i - 1, _ResX), j, k)]) / (2.0 * _DX);
+    float dVdx = (_VelY[Idx(ClampI(i + 1, _ResX), j, k)] - _VelY[Idx(ClampI(i - 1, _ResX), j, k)]) / (2.0 * _DX);
+    float dUdy = (_VelX[Idx(i, ClampI(j + 1, _ResY), k)] - _VelX[Idx(i, ClampI(j - 1, _ResY), k)]) / (2.0 * _DY);
+    return float3(dWdy - dVdz, dUdz - dWdx, dVdx - dUdy);
+}
+
+[numthreads(256, 1, 1)]
+void VorticityMag(uint3 id : SV_DispatchThreadID)
+{
+    int n = (int)id.x;
+    if (n >= _Num) return;
+    int i = (n / _ResZ) / _ResY;
+    int j = (n / _ResZ) % _ResY;
+    int k = n % _ResZ;
+    _Wmag[n] = length(VortAt(i, j, k));
+}
+
+// f = ε·(N×ω), N = ∇|ω|/|∇|ω||. Пишем в _O* (без гонки), затем CopyVel переносит в ũ.
+[numthreads(256, 1, 1)]
+void VorticityConfine(uint3 id : SV_DispatchThreadID)
+{
+    int n = (int)id.x;
+    if (n >= _Num) return;
+    int i = (n / _ResZ) / _ResY;
+    int j = (n / _ResZ) % _ResY;
+    int k = n % _ResZ;
+
+    float3 grad = float3(
+        (_Wmag[Idx(ClampI(i + 1, _ResX), j, k)] - _Wmag[Idx(ClampI(i - 1, _ResX), j, k)]) / (2.0 * _DX),
+        (_Wmag[Idx(i, ClampI(j + 1, _ResY), k)] - _Wmag[Idx(i, ClampI(j - 1, _ResY), k)]) / (2.0 * _DY),
+        (_Wmag[Idx(i, j, ClampI(k + 1, _ResZ))] - _Wmag[Idx(i, j, ClampI(k - 1, _ResZ))]) / (2.0 * _DZ));
+    float3 N = grad / (length(grad) + 1e-20);
+    float3 w = VortAt(i, j, k);
+    float3 f = _Eps * cross(N, w);
+
+    _OX[n] = _VelX[n] + f.x * _DT;
+    _OY[n] = _VelY[n] + f.y * _DT;
+    _OZ[n] = _VelZ[n] + f.z * _DT;
+}
+
+[numthreads(256, 1, 1)]
+void CopyVel(uint3 id : SV_DispatchThreadID)
+{
+    int n = (int)id.x;
+    if (n >= _Num) return;
+    _VelX[n] = _OX[n];
+    _VelY[n] = _OY[n];
+    _VelZ[n] = _OZ[n];
+}
+
+// MacCormack: коррекция = fwd + ½(orig − backForth), с зажимом к локальному диапазону fwd (без новых экстремумов).
+// _Alpha = orig (ин-плейс результат), _AlphaOut = fwd, _MBack = обратно-перенесённое.
+[numthreads(256, 1, 1)]
+void MacCormackCombine(uint3 id : SV_DispatchThreadID)
+{
+    int n = (int)id.x;
+    if (n >= _Num) return;
+    if (_SolidMask[n] != 0) { _Alpha[n] = 0.0; return; }
+
+    int i = (n / _ResZ) / _ResY;
+    int j = (n / _ResZ) % _ResY;
+    int k = n % _ResZ;
+
+    float fwd = _AlphaOut[n];
+    float corrected = fwd + 0.5 * (_Alpha[n] - _MBack[n]);
+
+    float lo = fwd, hi = fwd, f;
+    f = _AlphaOut[Idx(ClampI(i - 1, _ResX), j, k)]; lo = min(lo, f); hi = max(hi, f);
+    f = _AlphaOut[Idx(ClampI(i + 1, _ResX), j, k)]; lo = min(lo, f); hi = max(hi, f);
+    f = _AlphaOut[Idx(i, ClampI(j - 1, _ResY), k)]; lo = min(lo, f); hi = max(hi, f);
+    f = _AlphaOut[Idx(i, ClampI(j + 1, _ResY), k)]; lo = min(lo, f); hi = max(hi, f);
+    f = _AlphaOut[Idx(i, j, ClampI(k - 1, _ResZ))]; lo = min(lo, f); hi = max(hi, f);
+    f = _AlphaOut[Idx(i, j, ClampI(k + 1, _ResZ))]; lo = min(lo, f); hi = max(hi, f);
+
+    _Alpha[n] = clamp(corrected, lo, hi);
 }

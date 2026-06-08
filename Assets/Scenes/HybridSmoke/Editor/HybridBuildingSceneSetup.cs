@@ -105,11 +105,11 @@ public static class HybridBuildingSceneSetup
         // Очаг НИЗКО (у пола): горячий дым поднимается плавучестью, слабый сквозняк несёт его через здание.
         SetV3(so, "_inletCenter", new Vector3(0.7f, 0.35f, 2.5f));
         SetV3(so, "_inletHalf", new Vector3(0.25f, 0.3f, 0.5f));
-        SetV3(so, "_inletVelocity", new Vector3(0.35f, 0f, 0f)); // горизонталь (сквозняк); вертикаль даёт _buoyancy
-        // Вентилируемый пожар: СЛАБЫЙ сквозняк (полный впуск, скорость мала) + СИЛЬНАЯ плавучесть.
-        // Сквозняк несёт дым через здание, плавучесть поднимает его к потолку — баланс двух рычагов.
+        SetV3(so, "_inletVelocity", new Vector3(0.6f, 0f, 0f)); // горизонталь — несёт дым к вытяжкам
+        // Баланс: сквозняк (горизонтальный перенос к вытяжкам) + умеренная плавучесть (подъём к потолку).
+        // Если плавучесть >> сквозняка — дым копится у очага и не долетает; это и был эффект на скрине.
         SetBool(so, "_inflowFullFace", true);
-        SetFloat(so, "_buoyancy", 8f);
+        SetFloat(so, "_buoyancy", 4f);
         SetV3(so, "_ventCenter", new Vector3(7.9f, 1.8f, 4.2f));
         SetV3(so, "_ventHalf", new Vector3(0.15f, 0.6f, 0.5f));
         SetV3(so, "_ventVelocity", new Vector3(0.6f, 0f, 0f));

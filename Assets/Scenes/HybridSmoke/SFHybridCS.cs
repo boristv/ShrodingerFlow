@@ -84,15 +84,19 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
     [Tooltip("Скорость остывания (1/с): дым теряет тепло по мере распространения. Больше → быстрее теряет подъём (потолочный слой оседает раньше). 0 — дым вечно горячий/всплывает.")]
     [SerializeField] private float _cooling = 0.4f;
 
+    [Header("Турбулентность")]
+    [Tooltip("Vorticity confinement: возвращает мелкие завихрения (клубящийся факел), размытые численной диффузией. 0 — выкл. Действует на транспортную скорость, ψ не трогает.")]
+    [SerializeField] private float _vorticityConfinement = 3f;
+    [Tooltip("MacCormack-перенос α/T (низкодиффузионный): держит концентрацию и вихри → клубление и вовлечение (entrainment) видны, дым 'пухнет' при подъёме. Выкл — обычный полулагранж (размытее).")]
+    [SerializeField] private bool _macCormack = true;
+
     [Header("Трассеры — опциональный A/B-режим (для Billboard/Shaded)")]
     [Tooltip("Считать частицы-трассеры параллельно α. Несутся ТОЙ ЖЕ скоростью ISF+LES. Не влияют на α-поле. Видны в режимах Billboard/Shaded.")]
     [SerializeField] private bool _spawnTracers = true;
-    [SerializeField, Range(0, 1000)] private int _tracerPerStep = 80;
-    [Tooltip("Авто-срок жизни = время пересечения комнаты (длина / скорость впуска) × запас. Само масштабируется под размер сцены — вручную менять не нужно.")]
-    [SerializeField] private bool _autoTracerLifetime = true;
-    [SerializeField, Range(1f, 6f)] private float _tracerLifetimeSafety = 3f;
-    [Tooltip("Ручной срок жизни (шагов) — используется, только если авто выключен.")]
-    [SerializeField, Range(0, 4000)] private int _tracerLifetime = 600;
+    [Tooltip("Сколько трассеров рождать за шаг. МЕНЬШЕ → дольше живёт каждый (медленнее оборот при том же бюджете) → шлейф добивает дальше.")]
+    [SerializeField, Range(0, 1000)] private int _tracerPerStep = 30;
+    [Tooltip("Бюджет популяции: держим столько одновременно. Уходят в вытяжке/за границей; при переполнении перерабатываются САМЫЕ СТАРЫЕ. Срока по таймеру нет. Эффективная «жизнь» ≈ бюджет / спавн-за-шаг — поэтому большой бюджет + малый спавн = долгий шлейф.")]
+    [SerializeField, Range(2000, 400000)] private int _tracerPopulationCap = 120000;
     [Tooltip("Диффузия трассеров D (0 — чистая адвекция по характеристикам: контраст с α).")]
     [SerializeField] private float _tracerDiffusion;
 
@@ -110,6 +114,7 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
     private CSVelocity _vel;
     private CSScalarField _alpha;   // дым (плотность/оптика)
     private CSScalarField _temp;    // температура T (нагрев у очага, остывание) → плавучесть
+    private CSVorticityConfine _vc; // vorticity confinement на транспортной скорости
     private ComputeBuffer _solidMask, _sourceMask, _sinkMask;
     private ComputeBuffer _inflowMask;      // широкое −X сечение: задаёт скорость впуска (Дирихле)
     private ComputeBuffer _visualSolidMask; // только то, что рисуем (мебель; внешние стены опц.)
@@ -123,9 +128,8 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
     private CSParticles _particles;
     private ParticleGpuBuffers _particleBuffers;
     private Vector3[] _renderPos, _renderVel, _prevPos, _displayVelSmooth;
-    private float[] _pxArr, _pyArr, _pzArr, _age;
+    private float[] _pxArr, _pyArr, _pzArr;
     private int _particlesCount, _maxParticles;
-    private int _lifeSteps; // эффективный срок жизни трассера (авто из времени пересечения или ручной)
     private const float DisplayVelBlend = 0.32f;
 
     private void Start()
@@ -135,6 +139,7 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         _vel = new CSVelocity(_isf.resX, _isf.resY, _isf.resZ);
         _alpha = new CSScalarField(_scalarShader, _isf.resX, _isf.resY, _isf.resZ, _isf.dx, _isf.dy, _isf.dz);
         _temp = new CSScalarField(_scalarShader, _isf.resX, _isf.resY, _isf.resZ, _isf.dx, _isf.dy, _isf.dz);
+        _vc = new CSVorticityConfine(_scalarShader, _isf.resX, _isf.resY, _isf.resZ, _isf.dx, _isf.dy, _isf.dz);
         _buoyB = new ComputeBuffer(_isf.num, sizeof(float));
 
         _kInX = _inletVelocity.x / hbar;
@@ -196,15 +201,8 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         _particleBuffers = GetComponent<ParticleGpuBuffers>();
         if (!_spawnTracers || _particlesShader == null) return;
 
-        // Срок жизни из физики: сколько шагов трассер летит через комнату при скорости впуска, × запас.
-        float speed = Mathf.Max(0.05f, _inletVelocity.magnitude);
-        int crossSteps = Mathf.CeilToInt((vol_size[0] / speed) / Mathf.Max(1e-4f, dt));
-        _lifeSteps = _autoTracerLifetime
-            ? Mathf.CeilToInt(crossSteps * _tracerLifetimeSafety)
-            : _tracerLifetime;
-
-        // Бюджет = приток за всё время жизни (+запас); масштабируется вместе со сроком жизни.
-        _maxParticles = Mathf.Clamp(_tracerPerStep * (_lifeSteps + 8), 256, 400000);
+        // Буфер = бюджет популяции + небольшой запас на приток до переработки.
+        _maxParticles = Mathf.Clamp(_tracerPopulationCap + _tracerPerStep * 8, 256, 600000);
         _particles = new CSParticles();
         _particles.Init(_particlesShader, _maxParticles, _isf);
         _particleBuffers?.EnsureCapacity(_maxParticles);
@@ -215,7 +213,6 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         _pxArr = new float[_maxParticles];
         _pyArr = new float[_maxParticles];
         _pzArr = new float[_maxParticles];
-        _age = new float[_maxParticles];
     }
 
     private void Update()
@@ -240,6 +237,7 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         _particles?.Dispose();
         _alpha?.Dispose();
         _temp?.Dispose();
+        _vc?.Dispose();
         _vel?.Dispose();
         _isf?.Dispose();
     }
@@ -272,11 +270,14 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
 
         // Восстановление стабилизированной скорости и перенос полей той же скоростью (гл. 5.1.4–5.1.5).
         _isf.UpdateVelocities(_vel);
+        // Vorticity confinement на транспортной ũ (клубящийся факел; ψ не трогаем).
+        if (_vorticityConfinement > 0f)
+            _vc.Apply(_vel, _vorticityConfinement, dt);
         // Температура: нагрев у очага (T=1), перенос, диффузия, остывание (decay). Сток вытяжки не охлаждает (factor=1).
         _temp.Step(_vel, _solidMask, _sourceMask, _sinkMask,
-            dt, _thermalDiffusion, 1f, 1f, 1, _cooling * dt);
+            dt, _thermalDiffusion, 1f, 1f, 1, _cooling * dt, _macCormack);
         _alpha.Step(_vel, _solidMask, _sourceMask, _sinkMask,
-            dt, _alphaDiffusion, _alphaSourceValue, _alphaSinkFactor, _alphaDiffuseIters);
+            dt, _alphaDiffusion, _alphaSourceValue, _alphaSinkFactor, _alphaDiffuseIters, 0f, _macCormack);
 
         StepTracers();
         LogMetrics();
@@ -308,11 +309,8 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
             yy[i] = Random.Range(_inletCenter.y - _inletHalf.y, _inletCenter.y + _inletHalf.y);
             zz[i] = Random.Range(_inletCenter.z - _inletHalf.z, _inletCenter.z + _inletHalf.z);
         }
-        int before = _particles.Size;
         _particles.AddParticles(xx, yy, zz, n);
         _particlesCount = _particles.Size;
-        for (int i = before; i < _particlesCount; i++)
-            _age[i] = 0f;
     }
 
     private void CompactTracers()
@@ -320,19 +318,20 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         if (_particlesCount == 0) return;
         _particles.ReadPositions(_pxArr, _pyArr, _pzArr);
         Vector3 vmin = _ventCenter - _ventHalf, vmax = _ventCenter + _ventHalf;
+        // Массив в порядке возраста (фронт — старейшие). При переполнении бюджета перерабатываем старейших.
+        int over = _particlesCount - _tracerPopulationCap;
         for (int i = 0; i < _particlesCount; i++)
         {
-            _age[i] += 1f;
-            bool tooOld = _lifeSteps > 0 && _age[i] > _lifeSteps;
+            bool recycleOldest = over > 0 && i < over;
             bool inVent = _pxArr[i] >= vmin.x && _pxArr[i] <= vmax.x
                        && _pyArr[i] >= vmin.y && _pyArr[i] <= vmax.y
                        && _pzArr[i] >= vmin.z && _pzArr[i] <= vmax.z;
-            if (tooOld || inVent)
+            if (recycleOldest || inVent)
                 _pxArr[i] = _pyArr[i] = _pzArr[i] = -1f;
         }
         _particles.WritePositions(_pxArr, _pyArr, _pzArr, _particlesCount);
         _particles.CompactParticles(_pxArr, _pyArr, _pzArr,
-            vol_size[0], vol_size[1], vol_size[2], _prevPos, _displayVelSmooth, _age);
+            vol_size[0], vol_size[1], vol_size[2], _prevPos, _displayVelSmooth);
         _particlesCount = _particles.Size;
     }
 
@@ -497,7 +496,7 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
             uSum += m; if (m > uMax) uMax = m;
         }
 
-        Debug.Log($"[Hybrid3D] step={iterator} alphaSum={sum:F1} alphaMax={mx:F3} occupied(>0.05)={occupied}/{n} ({100.0 * occupied / n:F1}%) |u|mean={uSum / n:F3} |u|max={uMax:F3} lifeSteps={_lifeSteps} particles={_particlesCount}");
+        Debug.Log($"[Hybrid3D] step={iterator} alphaSum={sum:F1} alphaMax={mx:F3} occupied(>0.05)={occupied}/{n} ({100.0 * occupied / n:F1}%) |u|mean={uSum / n:F3} |u|max={uMax:F3} particles={_particlesCount}/{_tracerPopulationCap}");
     }
 
     #endregion

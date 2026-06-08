@@ -16,9 +16,9 @@ namespace ComputeShaderSF
         /// <summary>Текущее поле α (актуальный буфер после Step).</summary>
         public ComputeBuffer Alpha => _a;
 
-        private ComputeBuffer _a, _b;
+        private ComputeBuffer _a, _b, _c;
         private readonly ComputeShader _shader;
-        private readonly int _clearK, _advectK, _diffuseK, _boundaryK, _buoyK;
+        private readonly int _clearK, _advectK, _diffuseK, _boundaryK, _buoyK, _mcK;
 
         public CSScalarField(ComputeShader shader, int rx, int ry, int rz, float dx, float dy, float dz)
         {
@@ -31,9 +31,11 @@ namespace ComputeShaderSF
             _diffuseK = shader.FindKernel("DiffuseScalar");
             _boundaryK = shader.FindKernel("ScalarBoundary");
             _buoyK = shader.FindKernel("BuoyancyPotential");
+            _mcK = shader.FindKernel("MacCormackCombine");
 
             _a = new ComputeBuffer(num, sizeof(float));
             _b = new ComputeBuffer(num, sizeof(float));
+            _c = new ComputeBuffer(num, sizeof(float));
             Clear();
         }
 
@@ -64,20 +66,31 @@ namespace ComputeShaderSF
         /// Скорость <paramref name="vel"/> — стабилизированная ũ из ISF+LES (CSISF.UpdateVelocities).
         /// </summary>
         public void Step(CSVelocity vel, ComputeBuffer solidMask, ComputeBuffer sourceMask, ComputeBuffer sinkMask,
-            float dt, float diffusion, float sourceValue, float sinkFactor, int diffuseIters = 0, float decay = 0f)
+            float dt, float diffusion, float sourceValue, float sinkFactor, int diffuseIters = 0, float decay = 0f,
+            bool macCormack = false)
         {
             SetGrid();
             _shader.SetFloat("_DT", dt);
 
-            // Advection: _a -> _b
-            _shader.SetBuffer(_advectK, "_AlphaIn", _a);
-            _shader.SetBuffer(_advectK, "_AlphaOut", _b);
-            _shader.SetBuffer(_advectK, "_VX", vel.vx);
-            _shader.SetBuffer(_advectK, "_VY", vel.vy);
-            _shader.SetBuffer(_advectK, "_VZ", vel.vz);
-            _shader.SetBuffer(_advectK, "_SolidMask", solidMask);
-            _shader.Dispatch(_advectK, Groups, 1, 1);
-            Swap();
+            if (!macCormack)
+            {
+                // Полулагранжев перенос: _a -> _b
+                Advect(_a, _b, vel, solidMask);
+                Swap();
+            }
+            else
+            {
+                // MacCormack: forward _a->_b, backward _b->_c (−dt), коррекция в _a (ин-плейс).
+                Advect(_a, _b, vel, solidMask);
+                _shader.SetFloat("_DT", -dt);
+                Advect(_b, _c, vel, solidMask);
+                _shader.SetFloat("_DT", dt);
+                _shader.SetBuffer(_mcK, "_Alpha", _a);
+                _shader.SetBuffer(_mcK, "_AlphaOut", _b);
+                _shader.SetBuffer(_mcK, "_MBack", _c);
+                _shader.SetBuffer(_mcK, "_SolidMask", solidMask);
+                _shader.Dispatch(_mcK, Groups, 1, 1);
+            }
 
             // Diffusion: несколько явных шагов (по устойчивости D·dt/dx² ≤ 1/6)
             if (diffusion > 0f && diffuseIters > 0)
@@ -114,6 +127,17 @@ namespace ComputeShaderSF
             _shader.Dispatch(_buoyK, (cols + 63) / 64, 1, 1);
         }
 
+        private void Advect(ComputeBuffer src, ComputeBuffer dst, CSVelocity vel, ComputeBuffer solidMask)
+        {
+            _shader.SetBuffer(_advectK, "_AlphaIn", src);
+            _shader.SetBuffer(_advectK, "_AlphaOut", dst);
+            _shader.SetBuffer(_advectK, "_VX", vel.vx);
+            _shader.SetBuffer(_advectK, "_VY", vel.vy);
+            _shader.SetBuffer(_advectK, "_VZ", vel.vz);
+            _shader.SetBuffer(_advectK, "_SolidMask", solidMask);
+            _shader.Dispatch(_advectK, Groups, 1, 1);
+        }
+
         private void Swap()
         {
             (_a, _b) = (_b, _a);
@@ -123,6 +147,7 @@ namespace ComputeShaderSF
         {
             _a?.Release();
             _b?.Release();
+            _c?.Release();
         }
     }
 }
