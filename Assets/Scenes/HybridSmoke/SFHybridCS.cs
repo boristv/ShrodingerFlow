@@ -8,6 +8,14 @@ using ShrodingerFlow.Particles;
 /// Шаг (гл. 5.1): ISF(ψ)→u→LES→проекция→advect(α)→границы. Силы вводятся через состояние (фазовый импульс на входе).
 /// Единые маски (гл. 4.4.9): стены/источник/сток видимы и ψ-границе, и переносу α, и оптике.
 /// </summary>
+/// <summary>Осесимметричный бокс (центр+полуразмер) для данных плана: перегородка, колонна, вытяжка.</summary>
+[System.Serializable]
+public struct HybridBox
+{
+    public Vector3 center;
+    public Vector3 half;
+}
+
 public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMaskSource
 {
     [Header("Compute Shaders")]
@@ -37,13 +45,24 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
     [Tooltip("Препятствие-мебель (короб): центр и полуразмер. Нулевой размер — выкл.")]
     [SerializeField] private Vector3 _obstacleCenter = new Vector3(2.0f, 0.9f, 2.0f);
     [SerializeField] private Vector3 _obstacleHalf = new Vector3(0.4f, 0.9f, 0.4f);
+    [Tooltip("План этажа: перегородки/колонны (твёрдые боксы). Проёмы = промежутки между боксами. Пусто = простая комната.")]
+    public HybridBox[] wallSegments;
+    [Tooltip("Доп. вытяжки (помимо основной): откачка α + проём в стене. Пусто = только основная.")]
+    public HybridBox[] extraVents;
     [Tooltip("Рисовать внешние стены в раймарче. Обычно выкл: они закрывают обзор. Границей потока остаются в любом случае.")]
     [SerializeField] private bool _renderOuterWalls;
+    [Tooltip("Меши перегородок/колонн (полупрозрачные) — чтобы стены было видно в режимах Billboard/Shaded (в раймарче их затирает полноэкранный проход, там работают объёмные стены).")]
+    [SerializeField] private bool _showWallMeshes = true;
+    [SerializeField] private Color _wallMeshColor = new Color(0.55f, 0.6f, 0.7f, 0.22f);
     [Tooltip("Открыть грани ±X (направление продувки): сквозной поток вместо запечатанной коробки. В закрытом объёме ISF поток застаивается (ветер гасится давлением). Вкл = проветриваемая комната/аэродинам. труба.")]
     [SerializeField] private bool _openFlowFaces = true;
 
-    [Header("Поток (зона впуска = струя, непрерывная подкачка)")]
-    [Tooltip("Зона впуска: задаёт скорость +X каждый шаг (Дирихле, бегущая фаза -ω·t). Локализованная струя (не во всю стену) даёт объёмный 3D-плюм с вертикальным растеканием, но крупнее точечной → поддерживает поток. Смести центр по Y для асимметрии/вертикали.")]
+    [Header("Поток (впуск, непрерывная подкачка)")]
+    [Tooltip("ВКЛ — впуск = всё входное сечение у −X грани (Дирихле-сквозняк, добивает до дальнего конца, авто-масштаб с размером комнаты). ВЫКЛ — локализованная струя-зона ниже (3D-плюм, но бьёт лишь часть комнаты).")]
+    [SerializeField] private bool _inflowFullFace;
+    [Tooltip("Глубина входного сечения по X (для полного впуска).")]
+    [SerializeField] private float _inflowDepth = 0.5f;
+    [Tooltip("Зона впуска (струя): когда полный впуск выключен. Смести центр по Y для асимметрии/вертикали.")]
     [SerializeField] private Vector3 _inflowCenter = new Vector3(0.2f, 1.0f, 2.0f);
     [SerializeField] private Vector3 _inflowHalf = new Vector3(0.35f, 0.6f, 0.8f);
     [SerializeField, Range(1, 8)] private int _boundaryIters = 4;
@@ -61,7 +80,11 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
     [Tooltip("Считать частицы-трассеры параллельно α. Несутся ТОЙ ЖЕ скоростью ISF+LES. Не влияют на α-поле. Видны в режимах Billboard/Shaded.")]
     [SerializeField] private bool _spawnTracers = true;
     [SerializeField, Range(0, 1000)] private int _tracerPerStep = 80;
-    [SerializeField, Range(0, 2000)] private int _tracerLifetime = 600;
+    [Tooltip("Авто-срок жизни = время пересечения комнаты (длина / скорость впуска) × запас. Само масштабируется под размер сцены — вручную менять не нужно.")]
+    [SerializeField] private bool _autoTracerLifetime = true;
+    [SerializeField, Range(1f, 6f)] private float _tracerLifetimeSafety = 3f;
+    [Tooltip("Ручной срок жизни (шагов) — используется, только если авто выключен.")]
+    [SerializeField, Range(0, 4000)] private int _tracerLifetime = 600;
     [Tooltip("Диффузия трассеров D (0 — чистая адвекция по характеристикам: контраст с α).")]
     [SerializeField] private float _tracerDiffusion;
 
@@ -92,6 +115,7 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
     private Vector3[] _renderPos, _renderVel, _prevPos, _displayVelSmooth;
     private float[] _pxArr, _pyArr, _pzArr, _age;
     private int _particlesCount, _maxParticles;
+    private int _lifeSteps; // эффективный срок жизни трассера (авто из времени пересечения или ручной)
     private const float DisplayVelBlend = 0.32f;
 
     private void Start()
@@ -111,8 +135,48 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         RunInitBoundary(8);
 
         InitTracers();
+        BuildWallMeshes();
 
         _initialized = true;
+    }
+
+    /// <summary>Полупрозрачные боксы перегородок/колонн как реальная геометрия — видны в Billboard/Shaded.</summary>
+    private void BuildWallMeshes()
+    {
+        if (!_showWallMeshes) return;
+
+        var temp = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        Mesh cube = temp.GetComponent<MeshFilter>().sharedMesh;
+        Destroy(temp);
+
+        var sh = Shader.Find("Universal Render Pipeline/Unlit");
+        if (sh == null) sh = Shader.Find("Sprites/Default");
+        var mat = new Material(sh) { color = _wallMeshColor };
+        mat.SetColor("_BaseColor", _wallMeshColor);
+        mat.SetFloat("_Surface", 1f);   // transparent
+        mat.SetFloat("_ZWrite", 0f);
+        mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+        mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+        mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+        mat.renderQueue = 3000;
+
+        var parent = new GameObject("WallMeshes").transform;
+        parent.SetParent(transform, false);
+
+        if (wallSegments != null)
+            foreach (var w in wallSegments) SpawnWallMesh(parent, cube, mat, w.center, w.half);
+        SpawnWallMesh(parent, cube, mat, _obstacleCenter, _obstacleHalf);
+    }
+
+    private static void SpawnWallMesh(Transform parent, Mesh cube, Material mat, Vector3 c, Vector3 h)
+    {
+        if (h.sqrMagnitude < 1e-6f) return;
+        var g = new GameObject("wall");
+        g.transform.SetParent(parent, false);
+        g.transform.localPosition = c;
+        g.transform.localScale = h * 2f;
+        g.AddComponent<MeshFilter>().sharedMesh = cube;
+        g.AddComponent<MeshRenderer>().sharedMaterial = mat;
     }
 
     private void InitTracers()
@@ -120,7 +184,15 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         _particleBuffers = GetComponent<ParticleGpuBuffers>();
         if (!_spawnTracers || _particlesShader == null) return;
 
-        _maxParticles = Mathf.Max(256, _tracerPerStep * 800);
+        // Срок жизни из физики: сколько шагов трассер летит через комнату при скорости впуска, × запас.
+        float speed = Mathf.Max(0.05f, _inletVelocity.magnitude);
+        int crossSteps = Mathf.CeilToInt((vol_size[0] / speed) / Mathf.Max(1e-4f, dt));
+        _lifeSteps = _autoTracerLifetime
+            ? Mathf.CeilToInt(crossSteps * _tracerLifetimeSafety)
+            : _tracerLifetime;
+
+        // Бюджет = приток за всё время жизни (+запас); масштабируется вместе со сроком жизни.
+        _maxParticles = Mathf.Clamp(_tracerPerStep * (_lifeSteps + 8), 256, 400000);
         _particles = new CSParticles();
         _particles.Init(_particlesShader, _maxParticles, _isf);
         _particleBuffers?.EnsureCapacity(_maxParticles);
@@ -227,7 +299,7 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         for (int i = 0; i < _particlesCount; i++)
         {
             _age[i] += 1f;
-            bool tooOld = _tracerLifetime > 0 && _age[i] > _tracerLifetime;
+            bool tooOld = _lifeSteps > 0 && _age[i] > _lifeSteps;
             bool inVent = _pxArr[i] >= vmin.x && _pxArr[i] <= vmax.x
                        && _pyArr[i] >= vmin.y && _pyArr[i] <= vmax.y
                        && _pzArr[i] >= vmin.z && _pzArr[i] <= vmax.z;
@@ -317,12 +389,26 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         return x || yz;
     }
 
+    private bool IsVent(float px, float py, float pz)
+    {
+        if (InAabb(px, py, pz, _ventCenter, _ventHalf)) return true;
+        if (extraVents != null)
+            for (int k = 0; k < extraVents.Length; k++)
+                if (InAabb(px, py, pz, extraVents[k].center, extraVents[k].half)) return true;
+        return false;
+    }
+
     private bool IsSolidAt(float px, float py, float pz)
     {
+        // Источник и вытяжки прорезают отверстия (не твёрдые).
         if (InAabb(px, py, pz, _inletCenter, _inletHalf)) return false;
-        if (InAabb(px, py, pz, _ventCenter, _ventHalf)) return false;
-        bool obstacle = _obstacleHalf.sqrMagnitude > 1e-6f && InAabb(px, py, pz, _obstacleCenter, _obstacleHalf);
-        return IsOuterWall(px, py, pz) || obstacle;
+        if (IsVent(px, py, pz)) return false;
+        if (IsOuterWall(px, py, pz)) return true;
+        if (_obstacleHalf.sqrMagnitude > 1e-6f && InAabb(px, py, pz, _obstacleCenter, _obstacleHalf)) return true;
+        if (wallSegments != null)
+            for (int k = 0; k < wallSegments.Length; k++)
+                if (InAabb(px, py, pz, wallSegments[k].center, wallSegments[k].half)) return true;
+        return false;
     }
 
     /// <summary>Единые маски (стены/источник/сток): один источник правды для ψ-границы, переноса α и оптики.</summary>
@@ -338,15 +424,18 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         {
             float px = _isf.pxCPU[i], py = _isf.pyCPU[i], pz = _isf.pzCPU[i];
             bool inSrc = InAabb(px, py, pz, _inletCenter, _inletHalf);
-            bool inSink = InAabb(px, py, pz, _ventCenter, _ventHalf);
+            bool inSink = IsVent(px, py, pz);
             bool isSolid = !inSrc && !inSink && IsSolidAt(px, py, pz);
             solid[i] = isSolid ? 1 : 0;
             // Визуальная маска: по умолчанию только внутренние препятствия (без внешних стен), иначе ничего не видно.
             visual[i] = isSolid && (_renderOuterWalls || !IsOuterWall(px, py, pz)) ? 1 : 0;
             src[i] = inSrc ? 1 : 0;
             sink[i] = inSink ? 1 : 0;
-            // Впуск: локализованная струя (зона) — задаёт скорость +X, держит поток, остаётся 3D.
-            inflow[i] = (InAabb(px, py, pz, _inflowCenter, _inflowHalf) && !isSolid && !inSink) ? 1 : 0;
+            // Впуск: либо всё входное сечение (полный сквозняк, авто-масштаб), либо локализованная струя.
+            bool inInflow = _inflowFullFace
+                ? (px <= _inflowDepth)
+                : InAabb(px, py, pz, _inflowCenter, _inflowHalf);
+            inflow[i] = (inInflow && !isSolid && !inSink) ? 1 : 0;
         }
         _solidMask = new ComputeBuffer(num, sizeof(int)); _solidMask.SetData(solid);
         _visualSolidMask = new ComputeBuffer(num, sizeof(int)); _visualSolidMask.SetData(visual);
@@ -384,7 +473,7 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
             uSum += m; if (m > uMax) uMax = m;
         }
 
-        Debug.Log($"[Hybrid3D] step={iterator} alphaSum={sum:F1} alphaMax={mx:F3} occupied(>0.05)={occupied}/{n} ({100.0 * occupied / n:F1}%) |u|mean={uSum / n:F3} |u|max={uMax:F3}");
+        Debug.Log($"[Hybrid3D] step={iterator} alphaSum={sum:F1} alphaMax={mx:F3} occupied(>0.05)={occupied}/{n} ({100.0 * occupied / n:F1}%) |u|mean={uSum / n:F3} |u|max={uMax:F3} lifeSteps={_lifeSteps} particles={_particlesCount}");
     }
 
     #endregion
@@ -435,6 +524,14 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
             Gizmos.color = new Color(0.4f, 0.5f, 0.7f, 0.9f);
             Gizmos.DrawWireCube(o + _obstacleCenter, _obstacleHalf * 2f);
         }
+        Gizmos.color = new Color(0.55f, 0.6f, 0.7f, 0.9f);
+        if (wallSegments != null)
+            foreach (var w in wallSegments)
+                Gizmos.DrawWireCube(o + w.center, w.half * 2f);
+        Gizmos.color = new Color(0.2f, 0.85f, 0.35f, 0.9f);
+        if (extraVents != null)
+            foreach (var v in extraVents)
+                Gizmos.DrawWireCube(o + v.center, v.half * 2f);
     }
 
     #endregion
