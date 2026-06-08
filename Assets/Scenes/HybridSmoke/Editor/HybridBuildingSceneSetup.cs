@@ -102,13 +102,14 @@ public static class HybridBuildingSceneSetup
         SetIntArray(so, "vol_size", 8, 3, 5);
         SetIntArray(so, "vol_res", 128, 32, 64);
 
-        // Очаг слева, впуск-струя, вытяжка справа-вверху.
-        SetV3(so, "_inletCenter", new Vector3(0.6f, 0.5f, 2.5f));
-        SetV3(so, "_inletHalf", new Vector3(0.22f, 0.4f, 0.45f));
-        SetV3(so, "_inletVelocity", new Vector3(0.9f, 0f, 0f));
-        // Здание длинное → полный впуск во всё сечение, чтобы дым добивал до дальних комнат.
+        // Очаг НИЗКО (у пола): горячий дым поднимается плавучестью, слабый сквозняк несёт его через здание.
+        SetV3(so, "_inletCenter", new Vector3(0.7f, 0.35f, 2.5f));
+        SetV3(so, "_inletHalf", new Vector3(0.25f, 0.3f, 0.5f));
+        SetV3(so, "_inletVelocity", new Vector3(0.35f, 0f, 0f)); // горизонталь (сквозняк); вертикаль даёт _buoyancy
+        // Вентилируемый пожар: СЛАБЫЙ сквозняк (полный впуск, скорость мала) + СИЛЬНАЯ плавучесть.
+        // Сквозняк несёт дым через здание, плавучесть поднимает его к потолку — баланс двух рычагов.
         SetBool(so, "_inflowFullFace", true);
-        SetFloat(so, "_inflowDepth", 0.6f);
+        SetFloat(so, "_buoyancy", 8f);
         SetV3(so, "_ventCenter", new Vector3(7.9f, 1.8f, 4.2f));
         SetV3(so, "_ventHalf", new Vector3(0.15f, 0.6f, 0.5f));
         SetV3(so, "_ventVelocity", new Vector3(0.6f, 0f, 0f));

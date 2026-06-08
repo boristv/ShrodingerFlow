@@ -29,7 +29,7 @@ namespace ComputeShaderSF
         private int _normalizeK, _gaugeK, _shiftK, _mulEachK;
         private int _copyR2CK, _fftNormK, _velOneK;
         private int _staggeredK, _divK, _jetK;
-        private int _gravK, _heatK, _uniformForceK;
+        private int _gravK, _heatK, _uniformForceK, _applyPhaseK;
 
         public void Init(ComputeShader kernels, ComputeShader fftShader,
             ComputeShader lesShader, int[] volSize, int[] volRes, float hbar, float dt)
@@ -70,6 +70,7 @@ namespace ComputeShaderSF
             _gravK = kernels.FindKernel("GravityPsi2");
             _heatK = kernels.FindKernel("HeatSinkPsi1");
             _uniformForceK = kernels.FindKernel("UniformForce");
+            _applyPhaseK = kernels.FindKernel("ApplyPhaseField");
 
             psi1 = new ComputeBuffer(num, sizeof(float) * 2);
             psi2 = new ComputeBuffer(num, sizeof(float) * 2);
@@ -405,6 +406,20 @@ namespace ComputeShaderSF
             _kernels.SetBuffer(_uniformForceK, "_PY", _py);
             _kernels.SetBuffer(_uniformForceK, "_PZ", _pz);
             _kernels.Dispatch(_uniformForceK, Groups1D, 1, 1);
+        }
+
+        /// <summary>
+        /// Применить произвольное фазовое поле χ = scale·phase[i] к ψ (силы через состояние).
+        /// Плавучесть: phase = вертикальный интеграл α ⇒ прирост скорости вверх ∝ α. После вызова нужен PressureProject.
+        /// </summary>
+        public void ApplyPhaseField(ComputeBuffer phase, float scale)
+        {
+            SetCommonUniforms();
+            _kernels.SetFloat("_PhaseScale", scale);
+            _kernels.SetBuffer(_applyPhaseK, "_PhaseField", phase);
+            _kernels.SetBuffer(_applyPhaseK, "_Psi1", psi1);
+            _kernels.SetBuffer(_applyPhaseK, "_Psi2", psi2);
+            _kernels.Dispatch(_applyPhaseK, Groups1D, 1, 1);
         }
 
         private void ApplyHeatSinkPsi1(ComputeBuffer isJet)

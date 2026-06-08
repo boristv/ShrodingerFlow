@@ -6,10 +6,12 @@
 #pragma kernel AdvectScalar
 #pragma kernel DiffuseScalar
 #pragma kernel ScalarBoundary
+#pragma kernel BuoyancyPotential
 
 RWStructuredBuffer<float> _AlphaIn;    // источник чтения (advect/diffuse)
 RWStructuredBuffer<float> _AlphaOut;   // запись результата
 RWStructuredBuffer<float> _Alpha;      // ин-плейс (граничные условия)
+RWStructuredBuffer<float> _BuoyOut;    // потенциал плавучести (вертикальный интеграл α)
 
 StructuredBuffer<float> _VX;           // скорость ũ по осям (на ячейку)
 StructuredBuffer<float> _VY;
@@ -30,6 +32,7 @@ float _DT;
 float _DAlpha;       // коэффициент регуляризующей диффузии D_α
 float _SourceValue;  // целевое α в источнике
 float _SinkFactor;   // множитель α в стоке (<1)
+float _Decay;        // экспоненциальное затухание за шаг (для T — остывание; для α = 0)
 
 int Idx(int i, int j, int k)
 {
@@ -154,10 +157,30 @@ void ScalarBoundary(uint3 id : SV_DispatchThreadID)
         _Alpha[n] = 0.0;
         return;
     }
+    _Alpha[n] = _Alpha[n] * (1.0 - _Decay);   // остывание/затухание (для α _Decay=0)
     if (_SourceMask[n] != 0)
         _Alpha[n] = max(_Alpha[n], _SourceValue);
     if (_SinkMask[n] != 0)
         _Alpha[n] = _Alpha[n] * _SinkFactor;
 
     _Alpha[n] = saturate(_Alpha[n]);
+}
+
+// Потенциал плавучести: для каждого столба (x,z) — накопленный снизу интеграл α по высоте.
+// χ ∝ этот потенциал ⇒ ∂χ/∂y ∝ α ⇒ вертикальный импульс вверх пропорционален концентрации дыма.
+[numthreads(64, 1, 1)]
+void BuoyancyPotential(uint3 id : SV_DispatchThreadID)
+{
+    int col = (int)id.x;
+    if (col >= _ResX * _ResZ) return;
+
+    int ix = col / _ResZ;
+    int iz = col % _ResZ;
+    float acc = 0.0;
+    for (int j = 0; j < _ResY; j++)
+    {
+        int n = Idx(ix, j, iz);
+        acc += _Alpha[n] * _DY;
+        _BuoyOut[n] = acc;
+    }
 }

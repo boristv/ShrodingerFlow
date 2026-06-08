@@ -18,7 +18,7 @@ namespace ComputeShaderSF
 
         private ComputeBuffer _a, _b;
         private readonly ComputeShader _shader;
-        private readonly int _clearK, _advectK, _diffuseK, _boundaryK;
+        private readonly int _clearK, _advectK, _diffuseK, _boundaryK, _buoyK;
 
         public CSScalarField(ComputeShader shader, int rx, int ry, int rz, float dx, float dy, float dz)
         {
@@ -30,6 +30,7 @@ namespace ComputeShaderSF
             _advectK = shader.FindKernel("AdvectScalar");
             _diffuseK = shader.FindKernel("DiffuseScalar");
             _boundaryK = shader.FindKernel("ScalarBoundary");
+            _buoyK = shader.FindKernel("BuoyancyPotential");
 
             _a = new ComputeBuffer(num, sizeof(float));
             _b = new ComputeBuffer(num, sizeof(float));
@@ -63,7 +64,7 @@ namespace ComputeShaderSF
         /// Скорость <paramref name="vel"/> — стабилизированная ũ из ISF+LES (CSISF.UpdateVelocities).
         /// </summary>
         public void Step(CSVelocity vel, ComputeBuffer solidMask, ComputeBuffer sourceMask, ComputeBuffer sinkMask,
-            float dt, float diffusion, float sourceValue, float sinkFactor, int diffuseIters = 0)
+            float dt, float diffusion, float sourceValue, float sinkFactor, int diffuseIters = 0, float decay = 0f)
         {
             SetGrid();
             _shader.SetFloat("_DT", dt);
@@ -95,11 +96,22 @@ namespace ComputeShaderSF
             // Boundary (in-place на актуальном _a)
             _shader.SetFloat("_SourceValue", sourceValue);
             _shader.SetFloat("_SinkFactor", sinkFactor);
+            _shader.SetFloat("_Decay", decay);
             _shader.SetBuffer(_boundaryK, "_Alpha", _a);
             _shader.SetBuffer(_boundaryK, "_SolidMask", solidMask);
             _shader.SetBuffer(_boundaryK, "_SourceMask", sourceMask);
             _shader.SetBuffer(_boundaryK, "_SinkMask", sinkMask);
             _shader.Dispatch(_boundaryK, Groups, 1, 1);
+        }
+
+        /// <summary>Потенциал плавучести: вертикальный (по Y) интеграл текущего α в <paramref name="outB"/>.</summary>
+        public void ComputeBuoyancyPotential(ComputeBuffer outB)
+        {
+            SetGrid();
+            _shader.SetBuffer(_buoyK, "_Alpha", _a);
+            _shader.SetBuffer(_buoyK, "_BuoyOut", outB);
+            int cols = resX * resZ;
+            _shader.Dispatch(_buoyK, (cols + 63) / 64, 1, 1);
         }
 
         private void Swap()

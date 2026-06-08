@@ -76,6 +76,14 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
     [SerializeField] private float _alphaDiffusion = 0.0015f;
     [SerializeField, Range(0, 4)] private int _alphaDiffuseIters = 1;
 
+    [Header("Тепло (v3): температура, остывание, плавучесть от T")]
+    [Tooltip("Сила плавучести ∝ T (вверх, +Y), через фазу ψ. Горячее у очага всплывает; остывший дым нейтрален → растекается/оседает. 0 — выкл.")]
+    [SerializeField] private float _buoyancy = 3f;
+    [Tooltip("Диффузия температуры (тепловая) — сглаживает поле T.")]
+    [SerializeField] private float _thermalDiffusion = 0.003f;
+    [Tooltip("Скорость остывания (1/с): дым теряет тепло по мере распространения. Больше → быстрее теряет подъём (потолочный слой оседает раньше). 0 — дым вечно горячий/всплывает.")]
+    [SerializeField] private float _cooling = 0.4f;
+
     [Header("Трассеры — опциональный A/B-режим (для Billboard/Shaded)")]
     [Tooltip("Считать частицы-трассеры параллельно α. Несутся ТОЙ ЖЕ скоростью ISF+LES. Не влияют на α-поле. Видны в режимах Billboard/Shaded.")]
     [SerializeField] private bool _spawnTracers = true;
@@ -100,10 +108,12 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
 
     private CSISF _isf;
     private CSVelocity _vel;
-    private CSScalarField _alpha;
+    private CSScalarField _alpha;   // дым (плотность/оптика)
+    private CSScalarField _temp;    // температура T (нагрев у очага, остывание) → плавучесть
     private ComputeBuffer _solidMask, _sourceMask, _sinkMask;
     private ComputeBuffer _inflowMask;      // широкое −X сечение: задаёт скорость впуска (Дирихле)
     private ComputeBuffer _visualSolidMask; // только то, что рисуем (мебель; внешние стены опц.)
+    private ComputeBuffer _buoyB;           // потенциал плавучести (вертикальный интеграл α)
     private bool _initialized;
 
     // Параметры струи входа (бегущая фаза, как в сценарии Jet).
@@ -124,6 +134,8 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         _isf.Init(_kernelsShader, _fftShader, _lesShader, vol_size, vol_res, hbar, dt);
         _vel = new CSVelocity(_isf.resX, _isf.resY, _isf.resZ);
         _alpha = new CSScalarField(_scalarShader, _isf.resX, _isf.resY, _isf.resZ, _isf.dx, _isf.dy, _isf.dz);
+        _temp = new CSScalarField(_scalarShader, _isf.resX, _isf.resY, _isf.resZ, _isf.dx, _isf.dy, _isf.dz);
+        _buoyB = new ComputeBuffer(_isf.num, sizeof(float));
 
         _kInX = _inletVelocity.x / hbar;
         _kInY = _inletVelocity.y / hbar;
@@ -224,8 +236,10 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         _inflowMask?.Release();
         _sourceMask?.Release();
         _sinkMask?.Release();
+        _buoyB?.Release();
         _particles?.Dispose();
         _alpha?.Dispose();
+        _temp?.Dispose();
         _vel?.Dispose();
         _isf?.Dispose();
     }
@@ -236,6 +250,13 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
     {
         _isf.kinematicViscosity = _kinematicViscosity;
         _isf.UpdateSpace(_useLES, null);
+
+        // Плавучесть (v3): фаза ψ из вертикального интеграла ТЕМПЕРАТУРЫ ⇒ подъём ∝ T. До проекции.
+        if (_buoyancy != 0f)
+        {
+            _temp.ComputeBuoyancyPotential(_buoyB);
+            _isf.ApplyPhaseField(_buoyB, _buoyancy * dt / hbar);
+        }
 
         // Непрерывная струя: бегущая фаза -ω·t на входе (постоянная подкачка импульса, как сопло в Jet).
         float invH = 1f / hbar;
@@ -249,8 +270,11 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
             _isf.PressureProject();
         }
 
-        // Восстановление стабилизированной скорости и перенос α той же скоростью (гл. 5.1.4–5.1.5).
+        // Восстановление стабилизированной скорости и перенос полей той же скоростью (гл. 5.1.4–5.1.5).
         _isf.UpdateVelocities(_vel);
+        // Температура: нагрев у очага (T=1), перенос, диффузия, остывание (decay). Сток вытяжки не охлаждает (factor=1).
+        _temp.Step(_vel, _solidMask, _sourceMask, _sinkMask,
+            dt, _thermalDiffusion, 1f, 1f, 1, _cooling * dt);
         _alpha.Step(_vel, _solidMask, _sourceMask, _sinkMask,
             dt, _alphaDiffusion, _alphaSourceValue, _alphaSinkFactor, _alphaDiffuseIters);
 

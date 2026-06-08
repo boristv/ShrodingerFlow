@@ -11,6 +11,7 @@
 #pragma kernel GravityPsi2
 #pragma kernel HeatSinkPsi1
 #pragma kernel UniformForce
+#pragma kernel ApplyPhaseField
 
 RWStructuredBuffer<float2> _Psi1;
 RWStructuredBuffer<float2> _Psi2;
@@ -42,6 +43,8 @@ float _GX;
 float _GY;
 float _GZ;
 float _DT;
+float _PhaseScale;
+StructuredBuffer<float> _PhaseField;
 
 float2 cmul(float2 a, float2 b)
 {
@@ -258,6 +261,20 @@ void UniformForce(uint3 id : SV_DispatchThreadID)
 
     float phase = (_GX * _PX[i] + _GY * _PY[i] + _GZ * _PZ[i]) * _DT / _Hbar;
     float2 rot = float2(cos(phase), sin(phase));
+    _Psi1[i] = cmul(_Psi1[i], rot);
+    _Psi2[i] = cmul(_Psi2[i], rot);
+}
+
+// Произвольное фазовое поле χ = _PhaseScale·_PhaseField[i] на обе компоненты ψ.
+// Для плавучести: _PhaseField = вертикальный интеграл α (столб дыма снизу) ⇒ ∂χ/∂y ∝ α ⇒ подъём ∝ α.
+[numthreads(256, 1, 1)]
+void ApplyPhaseField(uint3 id : SV_DispatchThreadID)
+{
+    int i = (int)id.x;
+    if (i >= _Num) return;
+
+    float ph = _PhaseScale * _PhaseField[i];
+    float2 rot = float2(cos(ph), sin(ph));
     _Psi1[i] = cmul(_Psi1[i], rot);
     _Psi2[i] = cmul(_Psi2[i], rot);
 }
