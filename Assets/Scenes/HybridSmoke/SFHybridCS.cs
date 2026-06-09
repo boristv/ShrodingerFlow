@@ -1,3 +1,5 @@
+using System;
+using System.IO;
 using UnityEngine;
 using ComputeShaderSF;
 using ShrodingerFlow.Particles;
@@ -42,6 +44,8 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
     [SerializeField] private Vector3 _ventCenter = new Vector3(3.75f, 2.2f, 2.0f);
     [SerializeField] private Vector3 _ventHalf = new Vector3(0.14f, 0.35f, 0.45f);
     [SerializeField] private Vector3 _ventVelocity = new Vector3(0.5f, 0f, 0f);
+    [Tooltip("Вытяжка включена: тяга в зоне вытяжки + откачка α + удаление трассеров. Выкл — вытяжка не работает (дым только накапливается/уходит пассивно). Можно щёлкать в Play.")]
+    [SerializeField] private bool _ventEnabled = true;
     [Tooltip("Препятствие-мебель (короб): центр и полуразмер. Нулевой размер — выкл.")]
     [SerializeField] private Vector3 _obstacleCenter = new Vector3(2.0f, 0.9f, 2.0f);
     [SerializeField] private Vector3 _obstacleHalf = new Vector3(0.4f, 0.9f, 0.4f);
@@ -110,6 +114,13 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
     [SerializeField] private bool _debugMetrics = true;
     [SerializeField, Range(30, 600)] private int _debugEverySteps = 120;
 
+    [Header("Проверяемые метрики (раздел диссертации)")]
+    [Tooltip("Тест сохранения объёма α: засеять гауссову каплю, выключить источник/сток/тепло/плавучесть — поле только переносится. ∫α должно сохраняться; в журнал печатается дрейф % (консервативность схемы переноса).")]
+    [SerializeField] private bool _conservationTest;
+    [Tooltip("Сбрасывать снимки поля скорости в файлы VelocityDumps/ — для расчёта энергетического спектра E(k) при разных ℏ скриптом spectrum.py.")]
+    [SerializeField] private bool _dumpVelocity;
+    [SerializeField, Range(60, 3000)] private int _dumpEverySteps = 300;
+
     private CSISF _isf;
     private CSVelocity _vel;
     private CSScalarField _alpha;   // дым (плотность/оптика)
@@ -120,6 +131,10 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
     private ComputeBuffer _visualSolidMask; // только то, что рисуем (мебель; внешние стены опц.)
     private ComputeBuffer _buoyB;           // потенциал плавучести (вертикальный интеграл α)
     private bool _initialized;
+    // Кэш конфигурации масок — для перестроения в рантайме при изменении.
+    private bool _lastOpenFlowFaces, _lastInflowFullFace;
+    private float _lastInflowDepth;
+    private double _alphaBaseline = -1; // базовый ∫α для теста сохранения объёма
 
     // Параметры струи входа (бегущая фаза, как в сценарии Jet).
     private float _kInX, _kInY, _kInZ, _omega;
@@ -148,13 +163,33 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         _omega = _inletVelocity.sqrMagnitude / (2f * hbar);
 
         BuildMasks();
+        _lastOpenFlowFaces = _openFlowFaces;
+        _lastInflowFullFace = _inflowFullFace;
+        _lastInflowDepth = _inflowDepth;
         InitPsiPlaneWave(_inletVelocity * 0.2f);
         RunInitBoundary(8);
 
         InitTracers();
         BuildWallMeshes();
+        if (_conservationTest) SeedAlphaBlob();
 
         _initialized = true;
+    }
+
+    /// <summary>Гауссова капля α в центре домена — начальное условие для теста сохранения объёма (чистый перенос).</summary>
+    private void SeedAlphaBlob()
+    {
+        int n = _isf.num;
+        var b = new float[n];
+        float cx = vol_size[0] * 0.5f, cy = vol_size[1] * 0.5f, cz = vol_size[2] * 0.5f;
+        float sig = Mathf.Min(vol_size[0], Mathf.Min(vol_size[1], vol_size[2])) * 0.12f;
+        float inv2s2 = 1f / (2f * sig * sig);
+        for (int i = 0; i < n; i++)
+        {
+            float ex = _isf.pxCPU[i] - cx, ey = _isf.pyCPU[i] - cy, ez = _isf.pzCPU[i] - cz;
+            b[i] = Mathf.Exp(-(ex * ex + ey * ey + ez * ez) * inv2s2);
+        }
+        _alpha.Alpha.SetData(b);
     }
 
     /// <summary>Полупрозрачные боксы перегородок/колонн как реальная геометрия — видны в Billboard/Shaded.</summary>
@@ -217,22 +252,22 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
 
     private void Update()
     {
-        if (!_initialized || _paused) return;
+        if (!_initialized) return;
+        RebuildMasksIfNeeded();
+        if (_paused) return;
         for (int s = 0; s < _stepsPerFrame; s++)
         {
             iterator++;
             Step();
         }
         UpdateTracerDisplay();
+        if (_dumpVelocity && _dumpEverySteps > 0 && iterator % _dumpEverySteps == 0)
+            DumpVelocity();
     }
 
     private void OnDestroy()
     {
-        _solidMask?.Release();
-        _visualSolidMask?.Release();
-        _inflowMask?.Release();
-        _sourceMask?.Release();
-        _sinkMask?.Release();
+        ReleaseMasks();
         _buoyB?.Release();
         _particles?.Dispose();
         _alpha?.Dispose();
@@ -250,7 +285,7 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         _isf.UpdateSpace(_useLES, null);
 
         // Плавучесть (v3): фаза ψ из вертикального интеграла ТЕМПЕРАТУРЫ ⇒ подъём ∝ T. До проекции.
-        if (_buoyancy != 0f)
+        if (_buoyancy != 0f && !_conservationTest)
         {
             _temp.ComputeBuoyancyPotential(_buoyB);
             _isf.ApplyPhaseField(_buoyB, _buoyancy * dt / hbar);
@@ -263,8 +298,9 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         {
             _isf.ApplyJetBoundary(_solidMask, 0f, 0f, 0f, 0f);
             _isf.ApplyJetBoundary(_inflowMask, _kInX, _kInY, _kInZ, jetPhase);
-            _isf.ApplyJetBoundary(_sinkMask,
-                _ventVelocity.x * invH, _ventVelocity.y * invH, _ventVelocity.z * invH, 0f);
+            if (_ventEnabled)
+                _isf.ApplyJetBoundary(_sinkMask,
+                    _ventVelocity.x * invH, _ventVelocity.y * invH, _ventVelocity.z * invH, 0f);
             _isf.PressureProject();
         }
 
@@ -274,10 +310,14 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         if (_vorticityConfinement > 0f)
             _vc.Apply(_vel, _vorticityConfinement, dt);
         // Температура: нагрев у очага (T=1), перенос, диффузия, остывание (decay). Сток вытяжки не охлаждает (factor=1).
-        _temp.Step(_vel, _solidMask, _sourceMask, _sinkMask,
-            dt, _thermalDiffusion, 1f, 1f, 1, _cooling * dt, _macCormack);
+        if (!_conservationTest)
+            _temp.Step(_vel, _solidMask, _sourceMask, _sinkMask,
+                dt, _thermalDiffusion, 1f, 1f, 1, _cooling * dt, _macCormack);
+        // В тесте сохранения: источник/сток/затухание выключены — чистый перенос (проверка консервативности схемы).
+        float aSource = _conservationTest ? 0f : _alphaSourceValue;
+        float aSink = _conservationTest ? 1f : (_ventEnabled ? _alphaSinkFactor : 1f);
         _alpha.Step(_vel, _solidMask, _sourceMask, _sinkMask,
-            dt, _alphaDiffusion, _alphaSourceValue, _alphaSinkFactor, _alphaDiffuseIters, 0f, _macCormack);
+            dt, _alphaDiffusion, aSource, aSink, _alphaDiffuseIters, 0f, _macCormack);
 
         StepTracers();
         LogMetrics();
@@ -323,7 +363,8 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         for (int i = 0; i < _particlesCount; i++)
         {
             bool recycleOldest = over > 0 && i < over;
-            bool inVent = _pxArr[i] >= vmin.x && _pxArr[i] <= vmax.x
+            bool inVent = _ventEnabled
+                       && _pxArr[i] >= vmin.x && _pxArr[i] <= vmax.x
                        && _pyArr[i] >= vmin.y && _pyArr[i] <= vmax.y
                        && _pzArr[i] >= vmin.z && _pzArr[i] <= vmax.z;
             if (recycleOldest || inVent)
@@ -434,6 +475,30 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
         return false;
     }
 
+    /// <summary>Перестроить маски на лету при изменении конфигурации стен/впуска (рантайм-щелчки в Play).</summary>
+    private void RebuildMasksIfNeeded()
+    {
+        if (_openFlowFaces == _lastOpenFlowFaces
+            && _inflowFullFace == _lastInflowFullFace
+            && Mathf.Approximately(_inflowDepth, _lastInflowDepth))
+            return;
+
+        ReleaseMasks();
+        BuildMasks();
+        _lastOpenFlowFaces = _openFlowFaces;
+        _lastInflowFullFace = _inflowFullFace;
+        _lastInflowDepth = _inflowDepth;
+    }
+
+    private void ReleaseMasks()
+    {
+        _solidMask?.Release();
+        _visualSolidMask?.Release();
+        _inflowMask?.Release();
+        _sourceMask?.Release();
+        _sinkMask?.Release();
+    }
+
     /// <summary>Единые маски (стены/источник/сток): один источник правды для ψ-границы, переноса α и оптики.</summary>
     private void BuildMasks()
     {
@@ -486,17 +551,65 @@ public class SFHybridCS : SFBase, IRaymarchScalarFieldSource, IRaymarchSolidMask
             if (a[i] > 0.05f) occupied++;
         }
 
-        // Скорость: затухает поле после стартового плюма или держится? (ключевая диагностика)
+        // Скорость + проверяемые метрики: кин. энергия, ошибка представимости (RMS дивергенции восстановленной u).
         var vx = new float[n]; var vy = new float[n]; var vz = new float[n];
         _vel.vx.GetData(vx); _vel.vy.GetData(vy); _vel.vz.GetData(vz);
-        double uSum = 0; float uMax = 0;
-        for (int i = 0; i < n; i++)
+        int rx = _isf.resX, ry = _isf.resY, rz = _isf.resZ;
+        float dx = _isf.dx, dy = _isf.dy, dz = _isf.dz;
+        double uSum = 0, uSq = 0, divSq = 0; float uMax = 0;
+        for (int i = 0; i < rx; i++)
+        for (int j = 0; j < ry; j++)
+        for (int k = 0; k < rz; k++)
         {
-            float m = Mathf.Sqrt(vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i]);
-            uSum += m; if (m > uMax) uMax = m;
+            int idx = i * ry * rz + j * rz + k;
+            float ux = vx[idx], uy = vy[idx], uz = vz[idx];
+            float m = Mathf.Sqrt(ux * ux + uy * uy + uz * uz);
+            uSum += m; uSq += ux * ux + uy * uy + uz * uz; if (m > uMax) uMax = m;
+            // Дискретная дивергенция (обратные разности, как в Div-ядре ISF) — невязка несжимаемости.
+            int im = i > 0 ? idx - ry * rz : idx;
+            int jm = j > 0 ? idx - rz : idx;
+            int km = k > 0 ? idx - 1 : idx;
+            double div = (ux - vx[im]) / dx + (uy - vy[jm]) / dy + (uz - vz[km]) / dz;
+            divSq += div * div;
+        }
+        double uRMS = Math.Sqrt(uSq / n);
+        double divRMS = Math.Sqrt(divSq / n);
+        double cell = (dx + dy + dz) / 3.0;
+        double repErr = uRMS > 1e-9 ? divRMS * cell / uRMS : 0;   // безразмерная: относит. дивергенция на ячейку
+        double Ekin = 0.5 * uSq * (dx * dy * dz);                 // полная кин. энергия поля
+
+        string consv = "";
+        if (_conservationTest)
+        {
+            if (_alphaBaseline < 0) _alphaBaseline = sum;
+            double drift = _alphaBaseline > 1e-9 ? (sum - _alphaBaseline) / _alphaBaseline * 100.0 : 0;
+            consv = $" | CONS ∫α={sum:F2} base={_alphaBaseline:F2} drift={drift:+0.000;-0.000}%";
         }
 
-        Debug.Log($"[Hybrid3D] step={iterator} alphaSum={sum:F1} alphaMax={mx:F3} occupied(>0.05)={occupied}/{n} ({100.0 * occupied / n:F1}%) |u|mean={uSum / n:F3} |u|max={uMax:F3} particles={_particlesCount}/{_tracerPopulationCap}");
+        Debug.Log($"[Hybrid3D] step={iterator} hbar={hbar:0.###} alphaSum={sum:F1} alphaMax={mx:F3} " +
+                  $"occupied={occupied}/{n}({100.0 * occupied / n:F1}%) |u|mean={uSum / n:F3} |u|max={uMax:F3} " +
+                  $"Ekin={Ekin:F3} repErr={repErr:E2} divRMS={divRMS:E2} particles={_particlesCount}/{_tracerPopulationCap}{consv}");
+    }
+
+    /// <summary>Снимок поля скорости в бинарный файл VelocityDumps/ для оффлайн-расчёта спектра E(k) (spectrum.py).</summary>
+    private void DumpVelocity()
+    {
+        int n = _isf.num;
+        var vx = new float[n]; var vy = new float[n]; var vz = new float[n];
+        _vel.vx.GetData(vx); _vel.vy.GetData(vy); _vel.vz.GetData(vz);
+        string dir = Path.Combine(Application.dataPath, "..", "VelocityDumps");
+        Directory.CreateDirectory(dir);
+        string path = Path.Combine(dir, $"vel_hbar{hbar:0.####}_res{_isf.resX}x{_isf.resY}x{_isf.resZ}_step{iterator}.bin");
+        using (var w = new BinaryWriter(File.Open(path, FileMode.Create)))
+        {
+            w.Write(_isf.resX); w.Write(_isf.resY); w.Write(_isf.resZ);
+            w.Write(_isf.dx); w.Write(_isf.dy); w.Write(_isf.dz); w.Write(hbar);
+            var bytes = new byte[n * 4];
+            Buffer.BlockCopy(vx, 0, bytes, 0, n * 4); w.Write(bytes);
+            Buffer.BlockCopy(vy, 0, bytes, 0, n * 4); w.Write(bytes);
+            Buffer.BlockCopy(vz, 0, bytes, 0, n * 4); w.Write(bytes);
+        }
+        Debug.Log($"[Hybrid3D] velocity dump → {path}");
     }
 
     #endregion
